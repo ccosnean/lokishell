@@ -99,8 +99,14 @@ def reset(core):
     trusted_paths += [core.profile_dir(persona) / '.envrc' for persona in personas]
     for path in trusted_paths:
         if path.is_file() and shutil.which('direnv'):
-            subprocess.run(['direnv', 'deny', str(path.parent)], check=True, capture_output=True,
-                           env=core.baseline_environment())
+            result = subprocess.run(['direnv', 'deny', str(path.parent)], capture_output=True,
+                                    text=True, env=core.baseline_environment())
+            # Older direnv returns ENOENT when an edited .envrc has no approval.
+            # That is already denied; actual permission/storage failures must stop reset.
+            absent = ('remove ' in result.stderr and '/allow/' in result.stderr
+                      and 'no such file or directory' in result.stderr)
+            if result.returncode and not absent:
+                raise click.ClickException(f'Could not remove direnv approval for {path}: {result.stderr.strip()}')
     for path, _, remaining in edits:
         if remaining.strip():
             core.write(path, remaining)

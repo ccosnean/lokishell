@@ -2,6 +2,7 @@
 import io
 import json
 import os
+import subprocess
 from pathlib import Path
 from unittest.mock import patch
 
@@ -136,3 +137,15 @@ class CommandTests(LokiFixture):
         self.assertIn('Configuration is retained', result.output)
         self.assertTrue((self.store / 'settings.json').exists())
         self.assertTrue((self.projects['personal'] / '.envrc').exists())
+
+    def test_reset_handles_old_direnv_missing_approvals_but_not_permission_errors(self):
+        real_run = subprocess.run
+        for message, expected in [('permission denied', 1), ('no such file or directory', 0)]:
+            def run(command, **kwargs):
+                if command[:2] == ['direnv', 'deny']:
+                    return subprocess.CompletedProcess(command, 1, '', f'direnv: error remove /tmp/allow/hash: {message}')
+                return real_run(command, **kwargs)
+            with patch('lokishell.reset.subprocess.run', side_effect=run):
+                result = self.reset_cli('y\nRESET LOKISHELL\n')
+            self.assertEqual(result.exit_code, expected, result.output)
+            self.assertEqual(self.store.exists(), bool(expected))
