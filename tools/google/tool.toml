@@ -10,7 +10,6 @@ unset_prefixes = ["CLOUDSDK_"]
 
 [env.set]
 CLOUDSDK_CONFIG = "{profile}/gcloud"
-CLOUDSDK_ACTIVE_CONFIG_NAME = "default"
 GOOGLE_APPLICATION_CREDENTIALS = "{profile}/gcloud/application_default_credentials.json"
 
 [state]
