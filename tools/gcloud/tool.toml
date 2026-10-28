@@ -1,0 +1,13 @@
+schema_version = 1
+id = "gcloud"
+name = "Google Cloud CLI"
+description = "Google Cloud CLI accounts and configurations"
+depends_on = ["google"]
+legacy_default = true
+
+[cli]
+command = "gcloud"
+install_hint = "Install the Google Cloud CLI: https://cloud.google.com/sdk/docs/install"
+
+[login]
+command = ["gcloud", "auth", "login"]

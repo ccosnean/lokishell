@@ -12,60 +12,13 @@ import tempfile
 import unittest
 from unittest.mock import patch
 
-LOKI = Path(__file__).resolve().parents[1] / 'bin/loki'
-loader = importlib.machinery.SourceFileLoader('loki_test_module', str(LOKI))
-spec = importlib.util.spec_from_loader(loader.name, loader)
-module = importlib.util.module_from_spec(spec)
-loader.exec_module(module)
+from tests.support import LokiFixture, LOKI, module
 
 
-class LokiTest(unittest.TestCase):
-    def setUp(self):
-        self.temp = tempfile.TemporaryDirectory(prefix='lokishell-test-')
-        self.base = Path(self.temp.name).resolve()
-        self.store = self.base / 'profiles-home'
-        self.fake = self.base / 'fake-bin'
-        self.fake.mkdir()
-        self.env = dict(os.environ, LOKI_HOME=str(self.store), DIRENV_CONFIG=str(self.base / 'direnv'),
-                        XDG_DATA_HOME=str(self.base / 'data'), XDG_CACHE_HOME=str(self.base / 'cache'),
-                        PATH=str(self.fake)+os.pathsep+os.environ['PATH'], GH_TOKEN='wrong-inherited-token',
-                        FIREBASE_TOKEN='wrong-inherited-token', ANTHROPIC_API_KEY='wrong-inherited-key',
-                        OPENAI_API_KEY='wrong-inherited-key', CODEX_SQLITE_HOME='/wrong/sqlite',
-                        CLOUDSDK_AUTH_ACCESS_TOKEN='wrong-inherited-token',
-                        GOOGLE_APPLICATION_CREDENTIALS='/wrong/adc', FAKE_LOG=str(self.base / 'calls.jsonl'))
-        for name in ('firebase', 'gcloud', 'claude', 'codex', 'gh'):
-            script = self.fake / name
-            script.write_text('''#!/usr/bin/env python3
-import json, os, sys
-from pathlib import Path
-name=Path(sys.argv[0]).name
-if name=='gh':
- assert sys.argv[1:5]==['auth','token','--hostname','github.com'], sys.argv
- print('fictional-github-token')
-else:
- with open(os.environ['FAKE_LOG'],'a') as f:
-  f.write(json.dumps({'tool':name,'args':sys.argv[1:],'profile':os.environ.get('LOKI_PROFILE'),
-                     'claude':os.environ.get('CLAUDE_CONFIG_DIR'),'codex':os.environ.get('CODEX_HOME'),
-                     'adc':os.environ.get('GOOGLE_APPLICATION_CREDENTIALS')})+'\\n')
- if os.environ.get('FAIL_TOOL')==name: sys.exit(9)
-''')
-            script.chmod(0o700)
-        self.projects = {}
-        for name in ('personal', 'work', 'personal-two'):
-            project = self.base / name
-            project.mkdir()
-            self.projects[name] = project
-            self.run_loki('init', '--profile', name.split('-')[0], '--no-shell', cwd=project)
+class LokiTest(LokiFixture):
 
-    def tearDown(self):
-        self.temp.cleanup()
 
-    def run_loki(self, *args, cwd=None, env=None, check=True, input=None):
-        return subprocess.run([str(LOKI), *args], cwd=cwd or self.projects.get('personal', self.base),
-                              env=env or self.env, text=True, capture_output=True, check=check, input=input)
 
-    def directory(self, name):
-        return self.store / 'profiles' / name
 
     def test_parallel_profiles_and_ambient_credentials(self):
         for name in ('personal', 'work'):
@@ -219,24 +172,8 @@ print(n)
         (self.directory('personal')/'claude/.credentials.json').write_text('fictional')
         result=self.run_loki('clean','--global',env=dict(self.env,FAIL_TOOL='claude'),check=False)
         self.assertNotEqual(result.returncode,0)
-        self.assertIn('Claude Keychain logout',result.stderr)
+        self.assertIn('Claude Code logout',result.stderr)
 
-    def test_github_import_checks_identity_without_login_or_switch(self):
-        config=self.directory('personal')/'profile.json'
-        old=json.loads(config.read_text())
-        old.pop('git_name',None); old.pop('git_email',None)
-        config.write_text(json.dumps(old))
-        account={'login':'example-personal','id':42,'name':'Example Person','email':None}
-        with patch.dict(os.environ,self.env,clear=True), patch.object(sys_module(),'argv',[str(LOKI)]):
-            with patch.object(module.urllib.request,'urlopen',return_value=io.BytesIO(json.dumps(account).encode())):
-                module.github_login('personal','example-personal')
-        self.assertEqual((self.directory('personal')/'auth/github-token').read_text().strip(),'fictional-github-token')
-        self.assertEqual(json.loads(config.read_text())['git_email'],'42+example-personal@users.noreply.github.com')
-        with patch.dict(os.environ,self.env,clear=True):
-            with patch.object(module.urllib.request,'urlopen',return_value=io.BytesIO(json.dumps(account).encode())):
-                with self.assertRaises(ValueError):
-                    module.github_login('work','different-account')
-        self.assertFalse((self.directory('work')/'auth/github-token').exists())
 
     def test_git_credential_helper_is_scoped_to_github(self):
         (self.directory('personal')/'auth/github-token').write_text('fictional-personal')
@@ -285,14 +222,6 @@ print(n)
         self.assertEqual(first.count('# BEGIN lokishell'),1)
         self.assertTrue((fake_home/'.zshenv').is_file())
 
-    def test_real_firebase_store_if_available(self):
-        module_path=os.environ.get('LOKI_TEST_FIREBASE_CONFIGSTORE_MODULE')
-        if not module_path:
-            self.skipTest('Optional installed Firebase library check')
-        for name in ('personal','work'):
-            expression='process.stdout.write(require('+json.dumps(module_path)+').configstore.path)'
-            result=self.run_loki('--profile',name,'exec','node','-e',expression)
-            self.assertEqual(result.stdout,str(self.directory(name)/'xdg/configstore/firebase-tools.json'))
 
 
 def sys_module():

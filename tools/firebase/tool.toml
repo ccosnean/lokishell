@@ -1,0 +1,25 @@
+schema_version = 1
+id = "firebase"
+name = "Firebase CLI"
+description = "Firebase saved logins, with persona-scoped Google credentials"
+depends_on = ["google"]
+legacy_default = true
+
+[cli]
+command = "firebase"
+install_hint = "npm install -g firebase-tools"
+
+[env]
+unset = ["FIREBASE_TOKEN", "FIREBASE_CONFIG"]
+
+[env.set]
+XDG_CONFIG_HOME = "{profile}/xdg"
+
+[state]
+directories = ["xdg/configstore"]
+
+[login]
+command = ["firebase", "login", "--reauth"]
+
+[cleanup]
+directories = ["xdg/configstore"]

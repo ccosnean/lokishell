@@ -1,0 +1,56 @@
+schema_version = 1
+id = "github"
+name = "GitHub and Git"
+description = "Named GitHub credentials and GitHub Git identity/HTTPS authentication"
+legacy_default = true
+
+[cli]
+command = "gh"
+install_hint = "brew install gh (optional for importing an existing named login)"
+optional = true
+
+[env]
+unset = ["GH_TOKEN", "GITHUB_TOKEN", "GH_ENTERPRISE_TOKEN", "GITHUB_ENTERPRISE_TOKEN", "GH_HOST", "GH_REPO", "GIT_AUTHOR_NAME", "GIT_AUTHOR_EMAIL", "GIT_COMMITTER_NAME", "GIT_COMMITTER_EMAIL"]
+unset_prefixes = ["GIT_CONFIG"]
+
+[env.set]
+GH_CONFIG_DIR = "{profile}/gh"
+GH_HOST = "github.com"
+GIT_CONFIG_GLOBAL = "{profile}/gitconfig"
+GIT_CONFIG_COUNT = "5"
+GIT_CONFIG_KEY_0 = "credential.helper"
+GIT_CONFIG_VALUE_0 = ""
+GIT_CONFIG_KEY_1 = "credential.helper"
+GIT_CONFIG_VALUE_1 = "!{loki_quoted} _tool github credential"
+GIT_CONFIG_KEY_2 = "user.useConfigOnly"
+GIT_CONFIG_VALUE_2 = "true"
+GIT_CONFIG_KEY_3 = "user.name"
+GIT_CONFIG_KEY_4 = "user.email"
+
+[env.from_file.GH_TOKEN]
+path = "auth/github-token"
+default = "loki-login-required"
+
+[env.from_file.GITHUB_TOKEN]
+path = "auth/github-token"
+default = "loki-login-required"
+
+[env.from_config.GIT_CONFIG_VALUE_3]
+key = "git_name"
+default = ""
+
+[env.from_config.GIT_CONFIG_VALUE_4]
+key = "git_email"
+default = ""
+
+[state]
+directories = ["auth", "gh"]
+
+[hooks]
+prepare = "prepare"
+login = "login"
+credential = "credential"
+
+[cleanup]
+files = ["auth/github-token"]
+directories = ["gh"]

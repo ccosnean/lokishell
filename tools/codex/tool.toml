@@ -1,0 +1,34 @@
+schema_version = 1
+id = "codex"
+name = "Codex CLI"
+description = "Codex account, sessions, and file-backed MCP credentials"
+legacy_default = true
+
+[cli]
+command = "codex"
+install_hint = "Install Codex CLI: https://developers.openai.com/codex/cli"
+
+[env]
+unset = ["CODEX_API_KEY", "CODEX_SQLITE_HOME"]
+unset_prefixes = ["OPENAI_"]
+
+[env.set]
+CODEX_HOME = "{profile}/codex"
+
+[state]
+directories = ["codex"]
+
+[[state.files]]
+path = "codex/config.toml"
+content = '''cli_auth_credentials_store = "file"
+mcp_oauth_credentials_store = "file"
+'''
+
+[login]
+command = ["codex", "login"]
+
+[mcp]
+login = ["codex", "mcp", "login", "{server}"]
+
+[cleanup]
+files = ["codex/auth.json", "codex/.credentials.json"]

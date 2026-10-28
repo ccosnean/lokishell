@@ -1,0 +1,31 @@
+schema_version = 1
+id = "claude"
+name = "Claude Code"
+description = "Claude subscription login, local sessions, and direct MCP logins"
+legacy_default = true
+
+[cli]
+command = "claude"
+install_hint = "Install Claude Code: https://code.claude.com/docs/en/setup"
+
+[env]
+unset = ["CLAUDE_SECURESTORAGE_CONFIG_DIR", "CLAUDE_CODE_OAUTH_TOKEN", "CLAUDE_CODE_OAUTH_TOKEN_FILE_DESCRIPTOR", "CLAUDE_CODE_USE_BEDROCK", "CLAUDE_CODE_USE_VERTEX", "CLAUDE_CODE_USE_FOUNDRY"]
+unset_prefixes = ["ANTHROPIC_"]
+
+[env.set]
+CLAUDE_CONFIG_DIR = "{profile}/claude"
+
+[state]
+directories = ["claude"]
+
+[login]
+command = ["claude", "auth", "login", "--claudeai"]
+
+[mcp]
+login = ["claude", "mcp", "login", "{server}"]
+logout = ["claude", "mcp", "logout", "{server}"]
+
+[cleanup]
+command = ["claude", "auth", "logout"]
+when_nonempty = "claude"
+files = ["claude/.credentials.json"]

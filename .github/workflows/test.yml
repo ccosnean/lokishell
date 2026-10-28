@@ -23,5 +23,7 @@ jobs:
             sudo apt-get update
             sudo apt-get install -y direnv zsh
           fi
-      - name: Test isolated profiles and shells
-        run: python3 -m unittest discover -s tests -v
+      - name: Test tool definitions, isolated profiles, and shells
+        run: |
+          bin/loki tools validate
+          python3 -m unittest discover -s tests -v

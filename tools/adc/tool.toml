@@ -1,0 +1,14 @@
+schema_version = 1
+id = "adc"
+name = "Google application credentials"
+description = "Application Default Credentials for local SDKs"
+depends_on = ["google"]
+legacy_default = true
+
+[cli]
+command = "gcloud"
+install_hint = "Install the Google Cloud CLI: https://cloud.google.com/sdk/docs/install"
+
+[login]
+command = ["gcloud", "auth", "application-default", "login"]
+unset_env = ["GOOGLE_APPLICATION_CREDENTIALS"]

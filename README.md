@@ -1,6 +1,6 @@
 # LokiShell
 
-Use personal and work personas side by side. Choose a global default, override it by folder, and carry repository personas into Git worktrees. Ordinary commands use the selected account environment.
+Use personal and work personas side by side. Choose a global default, override it by folder, and carry repository personas into Git worktrees. Each persona enables its own tool integrations. Ordinary commands use the selected environment for those tools.
 
 LokiShell is a command-line account and environment manager for **zsh and bash**. The executable is `loki`.
 
@@ -20,7 +20,7 @@ loki shift personal
 
 Creates `personal` if needed and makes it the global persona. Ordinary commands outside a configured folder now use personal credentials. The first setup installs shell hooks: **open a new terminal once** to activate newly installed hooks. A command cannot change its parent shell's environment by itself.
 
-Connect accounts once per persona, from any folder using it:
+New personas start with no integrations enabled. Choose from `loki tools list`; connect only the accounts you use, once per persona:
 
 ```sh
 loki add firebase
@@ -43,6 +43,7 @@ Use another persona in a folder:
 ```sh
 cd ~/work/project
 loki use work
+loki add firebase          # enable and sign in once for work
 firebase projects:list     # work
 cd /tmp
 firebase projects:list     # personal
@@ -57,6 +58,35 @@ loki --profile work add firebase
 ```
 
 Logins belong to the shared persona, not the folder. Concurrent shells can use different personas.
+
+## Tool catalog
+
+```sh
+loki tools list                      # available integrations and enabled state
+loki tools show firebase             # variables, dependencies, and login definition
+loki tools install firebase codex    # enable integrations without logging in
+loki add firebase                    # enable if needed, then sign in
+loki tools remove codex              # disable; keep saved credentials
+```
+
+Install enables the Loki integration, not the upstream CLI binary. Missing executables are reported with installation instructions. Every persona has its own selection; use `loki --profile work tools install firebase` to manage another one.
+
+Only enabled integrations and their dependencies contribute environment variables. Unselected tools use their normal, unmanaged configuration. When changing personas or disabling a tool, Loki restores variables it previously owned rather than carrying that persona's tokens into the next environment.
+
+Firebase, gcloud, and ADC share a Google credential-path dependency; `loki tools list --all` includes it. They do not change Claude or Codex settings unless those integrations are also enabled. GitHub's integration additionally owns GitHub Git authentication and author identity.
+
+Definitions are separate directories under [`tools/`](tools/). Simple integrations need only `tool.toml`; unusual logins can add an `adapter.py`. Users can install their own definitions:
+
+```sh
+loki tools install --from /path/to/my-tool
+loki tools configure my-tool --set region=eu
+```
+
+Adding a contribution does not require editing core code or a central tool list. See [CONTRIBUTING.md](CONTRIBUTING.md) for the schema and automatically discovered integration tests.
+
+### Upgrading from 0.2
+
+Existing personas retain their previous integrations, settings, and credential paths. New personas start empty. `loki tools remove TOOL` can narrow an existing persona's selection. Open a fresh terminal after upgrading so the new environment tracking starts without stale exports from the old version.
 
 ## Worktrees
 
@@ -85,7 +115,7 @@ Removes only this folder's LokiShell block from `.envrc`, preserving other proje
 loki clean --global
 ```
 
-Clears the selected profile's locally managed logins for every linked folder. Folder pointers, identity settings, and agent history remain. The other profiles remain separate. This does **not** revoke provider-side OAuth grants, browser sessions, hosted app connections, custom MCP token stores, or tokens already held by running processes. Restart running agents after a global reset. Failed Claude Keychain/MCP logouts are reported as an error rather than hidden.
+Clears the selected persona's locally managed logins for every linked folder, including saved credentials from integrations that were previously disabled. Folder pointers, identity settings, and agent history remain. The other profiles remain separate. This does **not** revoke provider-side OAuth grants, browser sessions, hosted app connections, custom MCP token stores, or tokens already held by running processes. Restart running agents after a global reset. Failed Claude Keychain/MCP logouts are reported as an error rather than hidden.
 
 ## Agents and shells
 
@@ -114,7 +144,7 @@ eval "$(loki hook bash)"
   settings.json             # global persona, folder pointers, repository/worktree associations
   profiles/
     personal/
-      profile.json          # identity metadata; no tokens
+      profile.json          # enabled tools and tool-specific settings; no tokens
       env.sh                # environment loader
       auth/github-token     # selected GitHub token
       xdg/configstore/      # Firebase CLI login
@@ -122,6 +152,7 @@ eval "$(loki hook bash)"
       claude/               # Claude Code configuration and sessions
       codex/                # Codex configuration, credentials, sessions, MCP tokens
     work/
+  tools/                    # user-installed definitions
   backups/                  # shell startup backups
 
 project/.envrc              # direnv pointer to one shared persona
@@ -129,15 +160,15 @@ project/.envrc              # direnv pointer to one shared persona
 
 `LOKI_HOME` can override the settings root. Its location is independent of `XDG_CONFIG_HOME`, so nested profile selection does not create nested stores. Profile directories are private to the current OS user (`0700`); files LokiShell creates are `0600`.
 
-GitHub and Codex tokens use local files, not encryption supplied by LokiShell. Claude subscription credentials use Claude Code's directory-scoped Keychain storage on macOS. This separates account selection under one OS user; it is not an OS security boundary. Never commit profile stores or copy their contents into logs.
+GitHub and Codex tokens use local files, not encryption supplied by LokiShell. Claude subscription credentials use Claude Code's directory-scoped Keychain storage on macOS. Only enabled tools receive these settings. This separates account selection under one OS user; it is not an OS security boundary. Never commit profile stores or copy their contents into logs.
 
 ## GitHub and Git
 
 `loki add github --user USERNAME` first attempts to import exactly that user's existing `gh` credential, verifies it against GitHub, and saves it in the selected profile. It never runs `gh auth switch`, changes the shared Keychain, or signs another account out. If no named login is available, interactive setup accepts a personal access token with hidden input. Set `LOKI_GH_IMPORT_DIR` to import from a nondefault GitHub CLI configuration directory.
 
-GitHub CLI and `gh-axi` receive the selected token. Git uses an account-scoped credential helper, and GitHub SSH remotes are translated to HTTPS. Existing SSH keys are not copied, modified, or deleted. Other SSH remotes are intentionally disabled in this initial release. Git author identity comes from the connected GitHub account; edit `git_name` and `git_email` in the profile's `profile.json` to customize them, then run `loki init` again. Without configured identity, Git commits fail rather than borrow a repository identity.
+GitHub CLI and `gh-axi` receive the selected token. Git uses an account-scoped credential helper, and GitHub SSH remotes are translated to HTTPS. Existing SSH keys are not copied, modified, or deleted. Git author identity comes from the connected GitHub account; customize it with `loki tools configure github --set git_name=NAME --set git_email=EMAIL`. Without configured identity, Git commits fail rather than borrow a repository identity.
 
-If the earlier `dev-account` setup exists, initial profile creation reads its Git identity metadata. Saved credentials are not automatically copied. Reconnect services with `loki add`.
+If the earlier `dev-account` setup exists, enabling the GitHub integration reads its Git identity metadata. Saved credentials are not automatically copied. Reconnect services with `loki add`.
 
 ## MCP
 
@@ -150,7 +181,7 @@ loki add mcp codex tickets
 
 The login uses that profile's client configuration. Registered Claude MCP logins are logged out during a global reset; Codex file-backed MCP credentials are removed. MCP servers that maintain their own credentials need a separate adapter. Hosted Claude/ChatGPT connections follow their app account.
 
-Supported Claude authentication is a claude.ai subscription login (`--claudeai`). Keyless Claude Console sign-ins and arbitrary cloud-provider authentication are outside this initial adapter's scope. Keep Codex's `cli_auth_credentials_store` and `mcp_oauth_credentials_store` set to `file` for the managed reset behavior.
+The bundled Claude integration supports a claude.ai subscription login (`--claudeai`). Keyless Claude Console sign-ins and arbitrary cloud-provider authentication are outside this initial adapter's scope. Keep Codex's `cli_auth_credentials_store` and `mcp_oauth_credentials_store` set to `file` for the managed reset behavior.
 
 ## Development
 

@@ -1,0 +1,20 @@
+schema_version = 1
+id = "google"
+name = "Google credentials"
+description = "Shared Google SDK credential paths used by Firebase, gcloud, and ADC"
+internal = true
+
+[env]
+unset = ["GOOGLE_APPLICATION_CREDENTIALS", "GOOGLE_CLOUD_PROJECT", "GCLOUD_PROJECT", "GCP_PROJECT", "GOOGLE_CLOUD_QUOTA_PROJECT", "GOOGLE_IMPERSONATE_SERVICE_ACCOUNT"]
+unset_prefixes = ["CLOUDSDK_"]
+
+[env.set]
+CLOUDSDK_CONFIG = "{profile}/gcloud"
+CLOUDSDK_ACTIVE_CONFIG_NAME = "default"
+GOOGLE_APPLICATION_CREDENTIALS = "{profile}/gcloud/application_default_credentials.json"
+
+[state]
+directories = ["gcloud"]
+
+[cleanup]
+directories = ["gcloud"]
