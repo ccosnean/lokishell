@@ -1,0 +1,473 @@
+#!/usr/bin/env python3
+"""LokiShell: folder-selected account environments for command-line tools."""
+import argparse
+import getpass
+import json
+import os
+from pathlib import Path
+import re
+import shlex
+import shutil
+import subprocess
+import sys
+import time
+import urllib.error
+import urllib.request
+
+VERSION = '0.1.0'
+BEGIN, END = '# BEGIN lokishell', '# END lokishell'
+SERVICES = ('firebase', 'github', 'gcloud', 'adc', 'claude', 'codex')
+NAME = re.compile(r'^[a-zA-Z0-9][a-zA-Z0-9_-]{0,63}$')
+
+
+def root():
+    return Path(os.environ.get('LOKI_HOME', Path.home() / '.config/lokishell')).expanduser().absolute()
+
+
+def executable():
+    return str(Path(sys.argv[0]).absolute())
+
+
+def write(path, text):
+    check_storage_path(path)
+    path.write_text(text)
+    path.chmod(0o600)
+
+
+def mkdir(path):
+    check_storage_path(path)
+    path.mkdir(parents=True, exist_ok=True, mode=0o700)
+    path.chmod(0o700)
+
+
+def check_storage_path(path):
+    """Do not follow symlinks within managed storage, including ancestor directories."""
+    if path.is_symlink():
+        raise ValueError(f'Refusing to use a symlink: {path}')
+    if path.is_relative_to(root()):
+        for parent in path.parents:
+            if parent.is_symlink():
+                raise ValueError(f'Refusing to use linked account storage: {parent}')
+            if parent == root():
+                break
+
+
+def profile_dir(name):
+    if not NAME.fullmatch(name):
+        raise ValueError('Profile names may contain letters, numbers, underscores, and hyphens.')
+    for path in (root(), root() / 'profiles', root() / 'profiles' / name):
+        if path.is_symlink():
+            raise ValueError(f'Account storage must not be a symlink: {path}')
+    return root() / 'profiles' / name
+
+
+def read_config(name):
+    path = profile_dir(name) / 'profile.json'
+    if not path.is_file():
+        raise ValueError(f'Profile {name!r} does not exist. Run loki init --profile {name}.')
+    return json.loads(path.read_text())
+
+
+def save_config(name, config):
+    write(profile_dir(name) / 'profile.json', json.dumps(config, indent=2) + '\n')
+    write(profile_dir(name) / '.revision', str(time.time_ns()) + '\n')
+
+
+def create_profile(name):
+    directory = profile_dir(name)
+    mkdir(directory)
+    for part in ('xdg/configstore', 'gcloud', 'gh', 'auth', 'claude', 'codex'):
+        mkdir(directory / part)
+    config = directory / 'profile.json'
+    if not config.exists():
+        # Read identity metadata from the preceding private setup, never its tokens.
+        identity = {}
+        old = Path.home() / '.config/dev-accounts' / name / 'env.sh'
+        if old.is_file():
+            mapping = {'DEV_ACCOUNT_GITHUB_USER': 'github_user', 'DEV_ACCOUNT_GIT_NAME': 'git_name',
+                       'DEV_ACCOUNT_GIT_EMAIL': 'git_email'}
+            for line in old.read_text().splitlines():
+                for key, field in mapping.items():
+                    if line.startswith(f'export {key}='):
+                        values = shlex.split(line.split('=', 1)[1])
+                        if len(values) == 1:
+                            identity[field] = values[0]
+        save_config(name, {'name': name, **identity, 'mcp_logins': {}})
+    codex = directory / 'codex/config.toml'
+    if not codex.exists():
+        write(codex, 'cli_auth_credentials_store = "file"\nmcp_oauth_credentials_store = "file"\n')
+    envrc = (f'watch_file {shlex.quote(str(directory / "profile.json"))} '
+              f'{shlex.quote(str(directory / ".revision"))}\n'
+              f'eval "$({shlex.quote(executable())} _env {shlex.quote(name)})"\n')
+    write(directory / 'env.sh', envrc)
+    write(directory / '.envrc', f'source_env {shlex.quote(str(directory / "env.sh"))}\n')
+    git_config(name)
+    return directory
+
+
+def git_config(name):
+    config = read_config(name)
+    helper = '!'+shlex.quote(executable())+' _git-credential'
+    content = ('[user]\n    useConfigOnly = true\n'
+               '[credential]\n    helper =\n    helper = '+json.dumps(helper)+'\n'
+               '[url "https://github.com/"]\n'
+               '    insteadOf = git@github.com:\n    insteadOf = ssh://git@github.com/\n')
+    for key, field in (('name', 'git_name'), ('email', 'git_email')):
+        if config.get(field):
+            content += '[user]\n    '+key+' = '+json.dumps(config[field])+'\n'
+    write(profile_dir(name) / 'gitconfig', content)
+
+
+def changes(name):
+    directory, config = profile_dir(name), read_config(name)
+    remove = {'GH_TOKEN', 'GITHUB_TOKEN', 'GH_ENTERPRISE_TOKEN', 'GITHUB_ENTERPRISE_TOKEN',
+              'GH_HOST', 'GH_REPO', 'FIREBASE_TOKEN', 'FIREBASE_CONFIG', 'GOOGLE_APPLICATION_CREDENTIALS',
+              'GOOGLE_CLOUD_PROJECT', 'GCLOUD_PROJECT', 'GCP_PROJECT', 'GOOGLE_CLOUD_QUOTA_PROJECT',
+              'GOOGLE_IMPERSONATE_SERVICE_ACCOUNT', 'GIT_AUTHOR_NAME', 'GIT_AUTHOR_EMAIL',
+              'GIT_COMMITTER_NAME', 'GIT_COMMITTER_EMAIL', 'GIT_SSH', 'GIT_SSH_COMMAND',
+              'GIT_ASKPASS', 'SSH_ASKPASS', 'CODEX_API_KEY', 'CODEX_SQLITE_HOME',
+              'CLAUDE_SECURESTORAGE_CONFIG_DIR', 'CLAUDE_CODE_OAUTH_TOKEN',
+              'CLAUDE_CODE_OAUTH_TOKEN_FILE_DESCRIPTOR', 'CLAUDE_CODE_USE_BEDROCK',
+              'CLAUDE_CODE_USE_VERTEX', 'CLAUDE_CODE_USE_FOUNDRY'}
+    remove.update(key for key in os.environ if key.startswith(('CLOUDSDK_', 'GIT_CONFIG', 'ANTHROPIC_', 'OPENAI_')))
+    token_file = directory / 'auth/github-token'
+    token = token_file.read_text().strip() if token_file.is_file() else 'loki-login-required'
+    values = {
+        'LOKI_HOME': str(root()), 'LOKI_PROFILE': name,
+        'DIRENV_CONFIG': os.environ.get('DIRENV_CONFIG', str(Path.home() / '.config/direnv')),
+        'XDG_CONFIG_HOME': str(directory / 'xdg'), 'GH_CONFIG_DIR': str(directory / 'gh'),
+        'GH_HOST': 'github.com', 'GH_TOKEN': token, 'GITHUB_TOKEN': token, 'GH_NO_UPDATE_NOTIFIER': '1',
+        'CLOUDSDK_CONFIG': str(directory / 'gcloud'), 'CLOUDSDK_ACTIVE_CONFIG_NAME': 'default',
+        'CLOUDSDK_CORE_DISABLE_FILE_LOGGING': '1', 'CLOUDSDK_COMPONENT_MANAGER_DISABLE_UPDATE_CHECK': '1',
+        'GOOGLE_APPLICATION_CREDENTIALS': str(directory / 'gcloud/application_default_credentials.json'),
+        'FIREBASE_CLI_DISABLE_UPDATE_CHECK': 'true',
+        'CLAUDE_CONFIG_DIR': str(directory / 'claude'), 'CODEX_HOME': str(directory / 'codex'),
+        'GIT_CONFIG_GLOBAL': str(directory / 'gitconfig'), 'GIT_CONFIG_NOSYSTEM': '1',
+        'GIT_SSH_COMMAND': '/usr/bin/false',
+    }
+    overrides = [('credential.helper', ''), ('credential.helper', '!'+shlex.quote(executable())+' _git-credential'),
+                 ('user.useConfigOnly', 'true')]
+    # Empty values deliberately prevent an unconfigured profile borrowing repo identity.
+    overrides += [('user.name', config.get('git_name', '')), ('user.email', config.get('git_email', ''))]
+    values['GIT_CONFIG_COUNT'] = str(len(overrides))
+    for index, (key, value) in enumerate(overrides):
+        values[f'GIT_CONFIG_KEY_{index}'] = key
+        values[f'GIT_CONFIG_VALUE_{index}'] = value
+    return remove, values
+
+
+def environment(name):
+    remove, values = changes(name)
+    return {**{k: v for k, v in os.environ.items() if k not in remove}, **values}
+
+
+def block(text):
+    match = re.search(r'(?m)^# BEGIN lokishell\n.*?^# END lokishell(?:\n|$)', text, re.S)
+    if (BEGIN in text or END in text) and not match:
+        raise ValueError('The LokiShell block is incomplete; leaving the file unchanged.')
+    return match
+
+
+def binding(start=None):
+    current = Path(start or Path.cwd()).resolve()
+    for directory in (current, *current.parents):
+        file = directory / '.envrc'
+        if file.is_file():
+            match = block(file.read_text())
+            if match:
+                identity = re.search(r'^# profile: (.+)$', match.group(), re.M)
+                if identity:
+                    return directory, identity.group(1)
+            # A nearer .envrc takes precedence in direnv; do not guess parent inheritance.
+            return None
+    return None
+
+
+def choose(explicit=None):
+    if explicit:
+        profile_dir(explicit)
+        return explicit
+    selected = binding()
+    if selected:
+        return selected[1]
+    if not sys.stdin.isatty():
+        raise ValueError('Choose a profile explicitly: --profile personal or --profile work.')
+    value = input('Profile [personal/work, or a new name]: ').strip()
+    profile_dir(value)
+    return value
+
+
+def init(name, no_shell=False):
+    directory = create_profile(name)
+    path = Path.cwd() / '.envrc'
+    if path.is_symlink():
+        raise ValueError('Refusing to replace a symlinked .envrc.')
+    previous = path.read_text() if path.exists() else ''
+    match = block(previous)
+    content = (f'{BEGIN}\n# profile: {name}\nexport LOKI_HOME={shlex.quote(str(root()))}\n'
+               f'source_env {shlex.quote(str(directory / "env.sh"))}\n{END}\n')
+    if match:
+        updated = previous[:match.start()] + content + previous[match.end():]
+    else:
+        updated = previous + ('\n' if previous and not previous.endswith('\n') else '') + content
+    write(path, updated)
+    subprocess.run(['direnv', 'allow', str(Path.cwd())], check=True)
+    subprocess.run(['direnv', 'allow', str(directory)], check=True)
+    if not no_shell:
+        install_shell()
+    print(f'{Path.cwd()} → {name}')
+    print(f'Logins are shared by every folder linked to {name}. Run loki add SERVICE to connect one.')
+
+
+def hook(shell):
+    loki, direnv = shlex.quote(executable()), shlex.quote(shutil.which('direnv') or 'direnv')
+    if shell == 'zsh':
+        return f'''# LokiShell: interactive prompts and fresh noninteractive agent shells.
++if [[ -z ${{_loki_zsh_loaded-}} ]]; then
++  typeset _loki_zsh_loaded=1
++  _loki_refresh() {{ eval "$({direnv} export zsh)"; }}
++  loki() {{ command {loki} "$@"; local loki_rc=$?; _loki_refresh; return $loki_rc; }}
++  typeset -ga chpwd_functions precmd_functions
++  chpwd_functions+=(_loki_refresh)
++  precmd_functions+=(_loki_refresh)
++  _loki_refresh
++fi
++'''.replace('\n+', '\n')
+    if shell == 'bash':
+        return f'''if [ -z "${{_loki_bash_loaded-}}" ]; then
++  _loki_bash_loaded=1
++  _loki_refresh() {{ eval "$({direnv} export bash)"; }}
++  loki() {{ command {loki} "$@"; local loki_rc=$?; _loki_refresh; return "$loki_rc"; }}
++  cd() {{ builtin cd "$@" || return; _loki_refresh; }}
++  eval "$({direnv} hook bash)"
++  _loki_refresh
++fi
++'''.replace('\n+', '\n')
+    raise ValueError('Supported shells: zsh, bash.')
+
+
+def install_shell():
+    shell = Path(os.environ.get('SHELL', '/bin/zsh')).name
+    if shell not in ('zsh', 'bash'):
+        raise ValueError('Automatic setup supports zsh and bash. Use loki exec for other runners.')
+    home = Path.home()
+    files = [home / '.zshenv', home / '.zshrc'] if shell == 'zsh' else [home / '.bashrc', home / '.bash_profile']
+    line = f'eval "$({shlex.quote(executable())} hook {shell})"\n'
+    content = f'{BEGIN}\n{line}{END}\n'
+    for path in files:
+        previous = path.read_text() if path.exists() else ''
+        found = block(previous)
+        updated = previous[:found.start()] + content + previous[found.end():] if found else previous + '\n' + content
+        if updated != previous:
+            if previous:
+                backup = root() / 'backups'
+                mkdir(backup)
+                write(backup / f'{path.name}-{time.time_ns()}', previous)
+            write(path, updated)
+    print(f'Shell integration installed for {shell}. Open a fresh terminal once if this shell has not loaded it.')
+
+
+def github_login(name, username=None):
+    config, directory = read_config(name), profile_dir(name)
+    username = username or config.get('github_user')
+    if not username:
+        if not sys.stdin.isatty():
+            raise ValueError('Supply --user GITHUB_USERNAME to add github.')
+        username = input('GitHub username: ').strip()
+    if not re.fullmatch(r'[a-zA-Z0-9][a-zA-Z0-9-]*', username):
+        raise ValueError('Invalid GitHub username.')
+    token = ''
+    if shutil.which('gh'):
+        # Import exactly this username; never switch or mutate gh's shared Keychain.
+        base = dict(os.environ, GH_CONFIG_DIR=os.environ.get('LOKI_GH_IMPORT_DIR', str(Path.home() / '.config/gh')))
+        for key in ('GH_TOKEN', 'GITHUB_TOKEN', 'GH_ENTERPRISE_TOKEN', 'GITHUB_ENTERPRISE_TOKEN'):
+            base.pop(key, None)
+        result = subprocess.run(['gh', 'auth', 'token', '--hostname', 'github.com', '--user', username],
+                                env=base, capture_output=True, text=True)
+        if result.returncode == 0:
+            token = result.stdout.strip()
+    if not token:
+        if not sys.stdin.isatty():
+            raise ValueError('No saved gh login for that user. Run loki add github interactively to enter a token.')
+        print('No saved gh login found. Create a GitHub personal access token for this account, then paste it below.')
+        token = getpass.getpass('GitHub token (hidden): ').strip()
+    request = urllib.request.Request('https://api.github.com/user', headers={
+        'Authorization': f'Bearer {token}', 'Accept': 'application/vnd.github+json', 'User-Agent': 'LokiShell'})
+    with urllib.request.urlopen(request, timeout=20) as response:
+        account = json.load(response)
+    if account['login'].lower() != username.lower():
+        raise ValueError('The token belongs to a different GitHub account; nothing was saved.')
+    write(directory / 'auth/github-token', token + '\n')
+    config['github_user'] = account['login']
+    config.setdefault('git_name', account.get('name') or account['login'])
+    config.setdefault('git_email', account.get('email') or f'{account["id"]}+{account["login"]}@users.noreply.github.com')
+    save_config(name, config)
+    git_config(name)
+
+
+def add(name, services, username=None):
+    create_profile(name)
+    if services and services[0] == 'mcp':
+        if len(services) != 3 or services[1] not in ('claude', 'codex') or services[2].startswith('-'):
+            raise ValueError('Use loki add mcp claude|codex SERVER_NAME.')
+        client, server = services[1:]
+        subprocess.run([client, 'mcp', 'login', server], env=environment(name), check=True)
+        config = read_config(name)
+        entries = config.setdefault('mcp_logins', {}).setdefault(client, [])
+        if server not in entries:
+            entries.append(server)
+        save_config(name, config)
+        return
+    if not services or any(service not in SERVICES for service in services):
+        raise ValueError('Supported services: '+', '.join(SERVICES)+', mcp.')
+    actions = {'firebase': ['firebase', 'login', '--reauth'], 'gcloud': ['gcloud', 'auth', 'login'],
+               'adc': ['gcloud', 'auth', 'application-default', 'login'],
+               'claude': ['claude', 'auth', 'login', '--claudeai'], 'codex': ['codex', 'login']}
+    for service in services:
+        print(f'Connecting {service} to {name}.', flush=True)
+        if service == 'github':
+            github_login(name, username)
+        else:
+            env = environment(name)
+            if service == 'adc':
+                env.pop('GOOGLE_APPLICATION_CREDENTIALS', None)
+            subprocess.run(actions[service], env=env, check=True)
+            save_config(name, read_config(name))
+        print(f'{service} connected for every {name} folder.')
+
+
+def clean(name, globally=False):
+    if not globally:
+        path = Path.cwd() / '.envrc'
+        if path.is_symlink() or not path.is_file():
+            raise ValueError('Run clean from the folder where you ran loki init.')
+        text = path.read_text()
+        found = block(text)
+        if not found or f'# profile: {name}\n' not in found.group():
+            raise ValueError('This folder has no matching LokiShell pointer. Nothing changed.')
+        remaining = text[:found.start()] + text[found.end():]
+        if remaining.strip():
+            write(path, remaining)
+            subprocess.run(['direnv', 'allow', str(Path.cwd())], check=True)
+        else:
+            path.unlink()
+        print(f'Unlinked this folder. Shared {name} logins and other folders are unchanged.')
+        print('The shell returns to its inherited/default environment.')
+        return
+    directory, config, failures = profile_dir(name), read_config(name), []
+    # Preflight every managed location before making a partially completed reset.
+    for part in ('auth/github-token', 'xdg/configstore', 'gcloud', 'gh', 'claude', 'codex'):
+        check_storage_path(directory / part)
+    # Token reads stop immediately, without deleting shared SSH keys or gh Keychain entries.
+    (directory / 'auth/github-token').unlink(missing_ok=True)
+    for server in config.get('mcp_logins', {}).get('claude', []):
+        try:
+            subprocess.run(['claude', 'mcp', 'logout', server], env=environment(name), check=True)
+        except (OSError, subprocess.CalledProcessError):
+            failures.append(f'Claude MCP logout: {server}')
+    if any((directory / 'claude').iterdir()):
+        try:
+            subprocess.run(['claude', 'auth', 'logout'], env=environment(name), check=True)
+        except (OSError, subprocess.CalledProcessError):
+            failures.append('Claude Keychain logout')
+    for part in ('xdg/configstore', 'gcloud', 'gh'):
+        path = directory / part
+        if path.is_symlink():
+            raise ValueError(f'Refusing to clear linked storage: {path}')
+        if path.exists():
+            shutil.rmtree(path)
+        mkdir(path)
+    for part in ('claude/.credentials.json', 'codex/auth.json', 'codex/.credentials.json'):
+        path = directory / part
+        if path.is_symlink():
+            raise ValueError(f'Refusing to remove linked credentials: {path}')
+        path.unlink(missing_ok=True)
+    save_config(name, config)
+    print(f'Cleared locally managed {name} logins for all linked folders. Pointers and history remain.')
+    print('Restart running agents: tokens already in memory cannot be erased by clearing local storage.')
+    print('Browser/app connections, custom credential stores, and provider-side grants are not revoked.')
+    if failures:
+        raise ValueError('Some logouts need attention: '+', '.join(failures))
+
+
+def git_credential():
+    fields = dict(line.rstrip('\n').split('=', 1) for line in sys.stdin if '=' in line)
+    if fields.get('protocol') != 'https' or fields.get('host') != 'github.com':
+        return
+    name = os.environ.get('LOKI_PROFILE')
+    if not name:
+        return
+    path = profile_dir(name) / 'auth/github-token'
+    if path.is_file():
+        token = path.read_text().strip()
+        print('username='+read_config(name).get('github_user', 'x-access-token'))
+        print('password='+token)
+
+
+def main():
+    os.umask(0o077)
+    args = sys.argv[1:]
+    if args and args[0] == '_env':
+        remove, values = changes(args[1])
+        for key in sorted(remove):
+            if re.fullmatch(r'[A-Za-z_][A-Za-z0-9_]*', key):
+                print('unset '+key)
+        for key, value in values.items():
+            print('export '+key+'='+shlex.quote(value))
+        return
+    if args and args[0] == '_git-credential':
+        if len(args) == 1 or args[1] == 'get':
+            git_credential()
+        return
+    parser = argparse.ArgumentParser(description='Folder-selected personal and work accounts for CLI tools.')
+    parser.add_argument('--version', action='version', version='LokiShell '+VERSION)
+    parser.add_argument('--profile', '-p', help='Account profile; otherwise use this folder or ask')
+    sub = parser.add_subparsers(dest='action', required=True)
+    init_parser = sub.add_parser('init', help='Link this folder to a shared account profile')
+    init_parser.add_argument('--profile', '-p', dest='local_profile')
+    init_parser.add_argument('--no-shell', action='store_true', help='Skip shell startup file changes')
+    add_parser = sub.add_parser('add', help='Connect a service for all folders of this profile')
+    add_parser.add_argument('services', nargs='+')
+    add_parser.add_argument('--user', help='GitHub username')
+    clean_parser = sub.add_parser('clean', help='Unlink this folder; --global clears profile logins')
+    clean_parser.add_argument('--global', dest='globally', action='store_true')
+    sub.add_parser('status', help='Show profile paths, never credentials')
+    sub.add_parser('setup', help='Install shell integration without linking a folder')
+    hook_parser = sub.add_parser('hook', help='Print shell integration')
+    hook_parser.add_argument('shell', choices=('zsh', 'bash'))
+    exec_parser = sub.add_parser('exec', help='Select a profile explicitly for an isolated runner')
+    exec_parser.add_argument('command', nargs=argparse.REMAINDER)
+    opts = parser.parse_args(args)
+    if opts.action == 'hook':
+        print(hook(opts.shell), end='')
+        return
+    if opts.action == 'setup':
+        mkdir(root())
+        install_shell()
+        return
+    name = choose(getattr(opts, 'local_profile', None) or opts.profile)
+    if opts.action == 'init':
+        init(name, opts.no_shell)
+    elif opts.action == 'add':
+        add(name, opts.services, opts.user)
+    elif opts.action == 'clean':
+        clean(name, opts.globally)
+    elif opts.action == 'status':
+        directory = profile_dir(name)
+        config = read_config(name)
+        print(json.dumps({'profile': name, 'folder': str(binding()[0]) if binding() else None,
+                          'storage': str(directory), 'github_user': config.get('github_user'),
+                          'github_connected': (directory / 'auth/github-token').is_file()}, indent=2))
+    elif opts.action == 'exec':
+        command = opts.command[1:] if opts.command[:1] == ['--'] else opts.command
+        if not command:
+            raise ValueError('Supply a command after exec.')
+        os.execvpe(command[0], command, environment(name))
+
+
+if __name__ == '__main__':
+    try:
+        main()
+    except (OSError, ValueError, KeyError, subprocess.CalledProcessError, urllib.error.URLError) as error:
+        print(f'loki: {error}', file=sys.stderr)
+        sys.exit(1)

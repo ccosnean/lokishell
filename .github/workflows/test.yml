@@ -1,0 +1,27 @@
+name: Tests
+on:
+  push:
+  pull_request:
+permissions:
+  contents: read
+jobs:
+  test:
+    strategy:
+      matrix:
+        os: [macos-latest, ubuntu-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Install direnv and zsh
+        run: |
+          if [ "$RUNNER_OS" = "macOS" ]; then
+            brew install direnv
+          else
+            sudo apt-get update
+            sudo apt-get install -y direnv zsh
+          fi
+      - name: Test isolated profiles and shells
+        run: python3 -m unittest discover -s tests -v
