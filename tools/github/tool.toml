@@ -50,6 +50,10 @@ directories = ["auth", "gh"]
 prepare = "prepare"
 login = "login"
 credential = "credential"
+who = "who"
+
+[who]
+command = ["gh", "api", "user", "--jq", ".login"]
 
 [cleanup]
 files = ["auth/github-token"]

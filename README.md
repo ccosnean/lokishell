@@ -67,6 +67,18 @@ codex                                   # personal account; work agent continues
 
 Override just one worktree with `loki use personal` from its root. Outside assigned directory trees and repositories, the global persona applies.
 
+## Check current accounts
+
+```sh
+loki who                               # persona, selection source, and tool accounts
+loki who --json                        # structured results for agents
+loki --profile work who                # inspect work without switching this shell
+```
+
+`who` checks installed integrations in the persona's environment and current directory. Its table distinguishes signed-in accounts, saved credentials, missing CLIs, and failed checks. Internal dependencies such as `google` stay hidden. Checks run concurrently with a 10-second default timeout per command; use `--timeout SECONDS` to override it.
+
+Account details depend on the tool: Firebase reports its selected project account, gcloud reports its active account, and GitHub checks the token's owner. Claude and Codex report their login state; ADC may have saved credentials without an account email. Saved login state does not guarantee that credentials are still valid. `who` does not sign in or switch accounts.
+
 ## Manage integrations
 
 Bundled integrations: **GitHub/Git, Firebase CLI, gcloud, Google ADC, Claude Code, and Codex**.

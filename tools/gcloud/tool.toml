@@ -11,3 +11,6 @@ install_hint = "Install the Google Cloud CLI: https://cloud.google.com/sdk/docs/
 
 [login]
 command = ["gcloud", "auth", "login"]
+
+[who]
+command = ["gcloud", "auth", "list", "--filter=status:ACTIVE", "--format=value(account)", "--quiet"]

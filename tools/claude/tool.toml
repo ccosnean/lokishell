@@ -21,6 +21,12 @@ directories = ["claude"]
 [login]
 command = ["claude", "auth", "login", "--claudeai"]
 
+[who]
+command = ["claude", "auth", "status"]
+
+[hooks]
+who = "who"
+
 [mcp]
 login = ["claude", "mcp", "login", "{server}"]
 logout = ["claude", "mcp", "logout", "{server}"]

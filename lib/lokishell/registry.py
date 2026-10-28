@@ -2,6 +2,7 @@
 import importlib.util
 from collections.abc import MutableMapping
 import json
+import math
 import os
 from pathlib import Path, PurePosixPath
 import re
@@ -16,7 +17,7 @@ IDENTIFIER = re.compile(r'^[a-z][a-z0-9_-]*$')
 ENV_NAME = re.compile(r'^[A-Za-z_][A-Za-z0-9_]*$')
 RESERVED = {'HOME', 'home', 'PATH', 'SHELL', 'BASH_ENV', 'ENV', 'ZDOTDIR'}
 SECTIONS = {'schema_version', 'id', 'name', 'description', 'depends_on', 'internal', 'legacy_default',
-            'cli', 'env', 'state', 'login', 'cleanup', 'hooks', 'mcp'}
+            'cli', 'env', 'state', 'login', 'cleanup', 'hooks', 'mcp', 'who'}
 
 
 def relative_path(value):
@@ -119,7 +120,19 @@ class Tool:
         if 'when_nonempty' in cleanup:
             relative_path(cleanup['when_nonempty'])
         hooks = d.get('hooks', {})
-        allowed_keys(hooks, {'prepare', 'login', 'cleanup', 'credential'}, 'hooks')
+        allowed_keys(hooks, {'prepare', 'login', 'cleanup', 'credential', 'who'}, 'hooks')
+        who = d.get('who', {})
+        allowed_keys(who, {'command', 'timeout', 'signed_out_exit_codes'}, 'who')
+        if 'command' in who and not string_list(who['command'], 'who.command'):
+            raise ValueError('who.command cannot be empty')
+        timeout = who.get('timeout', 10)
+        if type(timeout) not in (int, float) or not math.isfinite(timeout) or not 0 < timeout <= 60:
+            raise ValueError('who.timeout must be between 0 and 60 seconds')
+        codes = who.get('signed_out_exit_codes', [])
+        if not isinstance(codes, list) or any(type(code) is not int or not 1 <= code <= 255 for code in codes):
+            raise ValueError('who.signed_out_exit_codes must contain exit codes from 1 to 255')
+        if who and 'command' not in who and 'who' not in hooks:
+            raise ValueError('who needs a command or a Python hook')
         if hooks and not (self.path.parent / 'adapter.py').is_file():
             raise ValueError('Declared hooks require adapter.py beside tool.toml')
         for function in hooks.values():

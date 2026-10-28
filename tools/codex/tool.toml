@@ -27,6 +27,12 @@ mcp_oauth_credentials_store = "file"
 [login]
 command = ["codex", "login"]
 
+[who]
+command = ["codex", "login", "status"]
+
+[hooks]
+who = "who"
+
 [mcp]
 login = ["codex", "mcp", "login", "{server}"]
 

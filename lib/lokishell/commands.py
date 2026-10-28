@@ -160,6 +160,7 @@ def tools_show(tool):
                                               set(env.get('from_config', {}))),
                           'clears': env.get('unset', []), 'clears_prefixes': env.get('unset_prefixes', []),
                           'cli': data.get('cli', {}), 'login': data.get('login', {}),
+                          'who': data.get('who', {}),
                           'hooks': list(data.get('hooks', {}))}, indent=2))
 
 
@@ -271,6 +272,36 @@ def setup_command():
     """Install shell integration without selecting a persona."""
     core.mkdir(core.root())
     core.install_shell()
+
+
+@main.command('who')
+@click.option('--json', 'as_json', is_flag=True, help='Print machine-readable account results.')
+@click.option('--timeout', type=click.FloatRange(min=0, max=60, min_open=True),
+              help='Maximum seconds per account command (default: integration setting or 10).')
+def who_command(as_json, timeout):
+    """Show the effective persona and accounts reported by installed tools."""
+    from .identity import accounts, LABELS
+    from .table import echo_table
+    active, source, folder = core.effective()
+    name = selected_profile() or active
+    if selected_profile():
+        source, folder = 'explicit', None
+    rows = accounts(core, name, timeout) if name else []
+    result = {'persona': name, 'active_persona': active, 'source': source,
+              'folder': str(folder) if folder else None, 'tools': rows}
+    if as_json:
+        click.echo(json.dumps(result, indent=2))
+    elif not name:
+        click.echo('No persona selected. Run loki use NAME --global to get started.')
+    else:
+        click.secho(f'Persona: {name}', bold=True)
+        click.echo(f'Context: {source}'+(f' · {folder}' if folder else ''))
+        if rows:
+            echo_table(['Tool', 'Account', 'Status'],
+                       [[row['id'], row['account'] or '—', LABELS[row['status']]
+                         + (f" ({row['detail']})" if row['detail'] else '')] for row in rows])
+        else:
+            click.echo('No tools installed for this persona.')
 
 
 @main.command('hook')

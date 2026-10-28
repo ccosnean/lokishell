@@ -11,6 +11,19 @@ import sys
 import urllib.request
 
 
+def who(ctx):
+    token = ctx.path('auth/github-token')
+    if not token.is_file() or not token.read_text().strip():
+        return {'status': 'signed_out'}
+    result = ctx.capture()
+    if result.returncode:
+        return {'status': 'error'}
+    username = result.stdout.strip()
+    if not re.fullmatch(r'[a-zA-Z0-9][a-zA-Z0-9-]{0,38}', username):
+        return {'status': 'error'}
+    return {'status': 'signed_in', 'account': username}
+
+
 def prepare(ctx):
     # Import only identity metadata from the old dev-account helper, never its tokens.
     legacy = Path.home() / '.config/dev-accounts' / ctx.persona / 'env.sh'

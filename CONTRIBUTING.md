@@ -76,6 +76,9 @@ Persistent settings live under `tool_config.acme` in the persona's `profile.json
 | `state.files` | Bootstrap entries with `path` and `content`; existing files are preserved |
 | `login.command` | Argument array for the native login command |
 | `login.unset_env` | Variables temporarily cleared for this login |
+| `who.command` | Account-check argv; prints only the selected username/email to stdout |
+| `who.timeout` | Command timeout in seconds, greater than 0 and at most 60; default 10 |
+| `who.signed_out_exit_codes` | Nonzero exit codes meaning signed out; other failures remain errors |
 | `cleanup.files`, `cleanup.directories` | Persona-relative credential paths to remove during global clean |
 | `cleanup.command` | Optional logout command, run before removing credential files |
 | `cleanup.when_nonempty` | Run the logout command only when this relative directory has state |
@@ -90,6 +93,23 @@ Tools cannot own Loki/direnv bookkeeping variables or change shell startup varia
 
 Only enabled integrations and their dependencies contribute variables. When selection changes, Loki restores the previous values for variables it no longer owns. Its private process-environment snapshot can contain inherited credentials, just as an environment diff can; never print the full environment in tests or logs.
 
+## Account checks for `loki who`
+
+An integration can declare a command that prints one identity, without logging in or switching accounts:
+
+```toml
+[who]
+command = ["acme", "account", "current", "--format=email"]
+signed_out_exit_codes = [1]
+timeout = 10
+```
+
+A successful command with empty stdout means signed out. Nonempty stdout must contain only one username or email, never a token. Commands run with the inspected persona's full environment, the caller's working directory, and closed stdin. Loki captures both output streams and discards raw errors. One failed check does not stop the other integrations.
+
+For structured output, multiple saved accounts, or a local credential file, declare `who = "who"` under `[hooks]` and implement `who(ctx)` in `adapter.py`. Return a dictionary containing `status`, optional `account`, and optional `detail`. Status values are `signed_in`, `signed_out`, `configured` (saved credentials), `unknown`, `unavailable`, `error`, `timeout`, or `unsupported`. Only those three result fields are displayed; do not put secrets in them.
+
+The account-check context adds `ctx.capture()` to execute `who.command` with its timeout, returning a `subprocess.CompletedProcess`, and `ctx.read_json(relative)` to read a persona-relative file or return `None` when absent. Hooks that only read files need no `who.command`. Return the selected account, not the first account in a list. Report unknown identity honestly; ADC and API-key logins may not expose an email. Avoid printing from hooks, refreshing credentials yourself, or invoking login/logout commands. Missing account-check definitions appear as `Not supported`.
+
 ## Optional Python hooks
 
 For an unusual login flow, declare hooks and put their implementations in `adapter.py`:
@@ -100,6 +120,7 @@ prepare = "prepare"
 login = "login"
 cleanup = "cleanup"
 credential = "credential"
+who = "who"
 ```
 
 Only declare the hooks you need. Hooks receive one context:

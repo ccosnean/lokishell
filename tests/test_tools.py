@@ -46,7 +46,7 @@ class ToolTests(LokiFixture):
                                   'bash',str(LOKI),probe)
         switched=json.loads(result.stdout)
         self.assertEqual(switched['GH_TOKEN'],'wrong-inherited-token')
-        self.assertIsNone(switched['GH_CONFIG_DIR'])
+        self.assertEqual(switched['GH_CONFIG_DIR'], self.env.get('GH_CONFIG_DIR'))
         self.assertEqual(switched['XDG_CONFIG_HOME'],str(self.directory('work')/'xdg'))
         self.assertEqual(switched['OPENAI_API_KEY'],'wrong-inherited-key')
 

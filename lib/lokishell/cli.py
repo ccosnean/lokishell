@@ -17,7 +17,7 @@ import uuid
 
 from .registry import Registry, Context, ENV_NAME
 
-VERSION = '0.5.1'
+VERSION = '0.6.0'
 BEGIN, END = '# BEGIN lokishell', '# END lokishell'
 NAME = re.compile(r'^[a-zA-Z0-9][a-zA-Z0-9_-]{0,63}$')
 

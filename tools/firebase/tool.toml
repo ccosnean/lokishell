@@ -21,5 +21,11 @@ directories = ["xdg/configstore"]
 [login]
 command = ["firebase", "login", "--reauth"]
 
+[who]
+command = ["firebase", "login:list", "--non-interactive"]
+
+[hooks]
+who = "who"
+
 [cleanup]
 directories = ["xdg/configstore"]
