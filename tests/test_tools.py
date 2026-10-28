@@ -29,7 +29,7 @@ class ToolTests(LokiFixture):
         listing=json.loads(self.run_loki('tools','list','--json').stdout)
         self.assertFalse(any(tool['enabled'] for tool in listing['tools']))
         probe='import os,json; print(json.dumps({k:os.environ.get(k) for k in ["GH_TOKEN","FIREBASE_TOKEN","ANTHROPIC_API_KEY","OPENAI_API_KEY"]}))'
-        values=json.loads(self.run_loki('exec','python3','-c',probe).stdout)
+        values=json.loads(self.run_in_persona('personal','python3','-c',probe).stdout)
         self.assertEqual(values['GH_TOKEN'],'wrong-inherited-token')
         self.assertEqual(values['OPENAI_API_KEY'],'wrong-inherited-key')
         self.assertFalse((self.directory('personal')/'codex').exists())
@@ -39,9 +39,11 @@ class ToolTests(LokiFixture):
         self.run_loki('--profile','work','tools','install','firebase')
         (self.directory('personal')/'auth/github-token').write_text('fictional-personal')
         probe='import os,json; print(json.dumps({k:os.environ.get(k) for k in ["GH_TOKEN","GH_CONFIG_DIR","XDG_CONFIG_HOME","OPENAI_API_KEY","LOKI_PROFILE"]}))'
-        first=json.loads(self.run_loki('exec','python3','-c',probe).stdout)
+        first=json.loads(self.run_in_persona('personal','python3','-c',probe).stdout)
         self.assertEqual(first['GH_TOKEN'],'fictional-personal')
-        result=self.run_loki('exec',str(LOKI),'--profile','work','exec','python3','-c',probe)
+        result=self.run_in_persona('personal','bash','--noprofile','--norc','-c',
+                                  'loki_test_env="$("$1" _env work)"; eval "$loki_test_env"; python3 -c "$2"',
+                                  'bash',str(LOKI),probe)
         switched=json.loads(result.stdout)
         self.assertEqual(switched['GH_TOKEN'],'wrong-inherited-token')
         self.assertIsNone(switched['GH_CONFIG_DIR'])
@@ -89,7 +91,7 @@ files = ["acme/token"]
         self.run_loki('tools','configure','acme','--set','region=eu')
         self.run_loki('add','acme')
         self.assertEqual((self.directory('personal')/'acme/token').read_text(),'fictional')
-        result=self.run_loki('exec','python3','-c','import os; print(os.environ["ACME_REGION"])')
+        result=self.run_in_persona('personal','python3','-c','import os; print(os.environ["ACME_REGION"])')
         self.assertEqual(result.stdout.strip(),'eu')
         self.run_loki('tools','remove','acme')
         self.assertTrue((self.directory('personal')/'acme/token').exists())
@@ -113,7 +115,7 @@ files = ["acme/token"]
         config=json.loads((directory/'profile.json').read_text())
         config.pop('tools')
         (directory/'profile.json').write_text(json.dumps(config))
-        self.run_loki('shift','personal','--no-shell')
+        self.run_loki('use','personal','--global','--no-shell')
         updated=json.loads((directory/'profile.json').read_text())
         self.assertIn('codex',updated['tools'])
         self.assertIn('firebase',updated['tools'])
@@ -173,4 +175,4 @@ prepare="prepare"
             registry=module.registry()
             registry.import_local(module,definition)
         self.run_loki('tools','list')
-        self.run_loki('exec','python3','-c','print("unselected hooks not loaded")')
+        self.run_in_persona('personal','python3','-c','print("unselected hooks not loaded")')

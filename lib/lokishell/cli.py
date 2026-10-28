@@ -1,6 +1,5 @@
 #!/usr/bin/env python3
 """LokiShell: folder-selected account environments for command-line tools."""
-import argparse
 import base64
 from contextlib import contextmanager
 import fcntl
@@ -15,9 +14,9 @@ import sys
 import tempfile
 import time
 
-from .registry import Registry, Context, Tool, ENV_NAME
+from .registry import Registry, Context, ENV_NAME
 
-VERSION = '0.3.0'
+VERSION = '0.4.0'
 BEGIN, END = '# BEGIN lokishell', '# END lokishell'
 NAME = re.compile(r'^[a-zA-Z0-9][a-zA-Z0-9_-]{0,63}$')
 
@@ -129,7 +128,7 @@ def effective():
 def read_config(name):
     path = profile_dir(name) / 'profile.json'
     if not path.is_file():
-        raise ValueError(f'Profile {name!r} does not exist. Run loki init --profile {name}.')
+        raise ValueError(f'Profile {name!r} does not exist. Run loki create {name}.')
     return json.loads(path.read_text())
 
 
@@ -287,7 +286,7 @@ def choose(explicit=None):
     return value
 
 
-def init(name, no_shell=False):
+def bind_folder(name, no_shell=False):
     directory = create_profile(name)
     path = Path.cwd() / '.envrc'
     if path.is_symlink():
@@ -316,7 +315,7 @@ def init(name, no_shell=False):
     print(f'Logins are shared by every folder linked to {name}. Run loki add SERVICE to connect one.')
 
 
-def shift(name, no_shell=False):
+def set_global(name, no_shell=False):
     create_profile(name)
     with edit_settings() as value:
         value['global_persona'] = name
@@ -358,9 +357,10 @@ def hook(shell):
 def install_shell():
     shell = Path(os.environ.get('SHELL', '/bin/zsh')).name
     if shell not in ('zsh', 'bash'):
-        raise ValueError('Automatic setup supports zsh and bash. Use loki exec for other runners.')
+        raise ValueError('Automatic setup supports zsh and bash. Run loki from one of these shells.')
     home = Path.home()
-    files = [home / '.zshenv', home / '.zshrc'] if shell == 'zsh' else [home / '.bashrc', home / '.bash_profile']
+    zhome = Path(os.environ.get('ZDOTDIR', home)).expanduser()
+    files = [zhome / '.zshenv', zhome / '.zshrc'] if shell == 'zsh' else [home / '.bashrc', home / '.bash_profile']
     line = f'eval "$({shlex.quote(executable())} hook {shell})"\n'
     content = f'{BEGIN}\n{line}{END}\n'
     for path in files:
@@ -373,6 +373,8 @@ def install_shell():
                 mkdir(backup)
                 write(backup / f'{path.name}-{time.time_ns()}', previous)
             write(path, updated)
+    with edit_settings() as value:
+        value['shell_files'] = list(dict.fromkeys([*value.get('shell_files', []), *(str(path) for path in files)]))
     print(f'Shell integration installed for {shell}. Open a fresh terminal once if this shell has not loaded it.')
 
 
@@ -423,198 +425,7 @@ def key_values(items):
     return values
 
 
-def tools_command(opts):
-    catalog = registry()
-    action = opts.tool_action
-    persona = opts.profile or effective()[0]
-    if action == 'validate':
-        if opts.path:
-            path = Path(opts.path).expanduser()
-            tool = Tool(path / 'tool.toml' if path.is_dir() else path)
-            catalog.tools[tool.id] = tool
-            catalog.resolve(list(catalog.tools))
-        print(f'Validated {len(catalog.tools)} tool definitions.')
-        return
-    if action == 'show':
-        tool = catalog.get(opts.tool)
-        data = tool.data
-        env = data.get('env', {})
-        print(json.dumps({'id': tool.id, 'name': data['name'], 'description': data['description'],
-                          'definition': str(tool.path), 'origin': tool.origin,
-                          'depends_on': data.get('depends_on', []),
-                          'variables': sorted(set(env.get('set', {})) | set(env.get('from_file', {})) |
-                                              set(env.get('from_config', {}))),
-                          'clears': env.get('unset', []), 'clears_prefixes': env.get('unset_prefixes', []),
-                          'cli': data.get('cli', {}), 'login': data.get('login', {}),
-                          'hooks': list(data.get('hooks', {}))}, indent=2))
-        return
-    if action == 'list':
-        config = read_config(persona) if persona else {'tools': []}
-        enabled = catalog.enabled(config)
-        selected = catalog.roots(config)
-        rows = []
-        for tool in catalog.tools.values():
-            if tool.data.get('internal', False) and not opts.all:
-                continue
-            command = tool.data.get('cli', {}).get('command')
-            rows.append({'id': tool.id, 'name': tool.data['name'], 'enabled': tool.id in enabled,
-                         'selected': tool.id in selected, 'origin': tool.origin,
-                         'cli': command, 'cli_available': bool(shutil.which(command)) if command else True})
-        if opts.json:
-            print(json.dumps({'persona': persona, 'tools': rows}, indent=2))
-        else:
-            print(f'Tools for {persona or "no selected persona"}:')
-            for row in rows:
-                state = 'enabled' if row['enabled'] else 'available'
-                native = '' if row['cli_available'] else ' (native CLI not installed)'
-                print(f'  {row["id"]:12} {state:10} {row["name"]}{native}')
-        return
-    persona = choose(opts.profile)
-    create_profile(persona)
-    if action == 'install':
-        names = list(opts.tools)
-        if opts.source:
-            names.append(catalog.import_local(core_api(), opts.source, replace=opts.replace))
-        elif opts.replace:
-            raise ValueError('--replace requires --from PATH.')
-        if not names:
-            raise ValueError('Name a tool or use --from PATH. See loki tools list.')
-        catalog.install(core_api(), persona, names)
-        print(f'Enabled for {persona}: '+', '.join(names))
-        for name in names:
-            native = catalog.get(name).data.get('cli', {})
-            if native.get('command') and not shutil.which(native['command']):
-                print(f'{name}: native CLI missing. '+native.get('install_hint', 'Install it separately.'))
-    elif action == 'remove':
-        catalog.remove(core_api(), persona, opts.tools)
-        print(f'Disabled for {persona}: '+', '.join(opts.tools)+'. Saved credentials are retained.')
-    elif action == 'configure':
-        catalog.get(opts.tool)
-        with edit_profile(persona) as config:
-            config.setdefault('tool_config', {}).setdefault(opts.tool, {}).update(key_values(opts.options))
-        if opts.tool in catalog.enabled(read_config(persona)):
-            catalog.prepare(core_api(), persona, [opts.tool])
-        print(f'Updated {opts.tool} settings for {persona}.')
-
-
-
-def main():
-    os.umask(0o077)
-    args = sys.argv[1:]
-    if args and args[0] in ('_env', '_effective-env'):
-        name = args[1] if args[0] == '_env' else effective()[0]
-        remove, values = changes(name)
-        for key in sorted(remove):
-            if re.fullmatch(r'[A-Za-z_][A-Za-z0-9_]*', key):
-                print('unset '+key)
-        for key, value in values.items():
-            print('export '+key+'='+shlex.quote(value))
-        return
-    if args and args[0] == '_git-credential':
-        # Compatibility with Git helper commands written by releases before the registry.
-        args = ['_tool', 'github', 'credential', *args[1:]]
-    if args and args[0] == '_tool':
-        if len(args) < 3:
-            raise ValueError('Internal tool command requires an integration and hook.')
-        name = os.environ.get('LOKI_PROFILE') or effective()[0]
-        if not name:
-            return
-        catalog = registry()
-        tool = catalog.get(args[1])
-        if tool.id not in catalog.enabled(read_config(name)):
-            return
-        tool.call(args[2], Context(core_api(), tool, name, args=args[3:]))
-        return
-    parser = argparse.ArgumentParser(description='Shapeshift CLI personas globally, by folder, and across worktrees.')
-    parser.add_argument('--version', action='version', version='LokiShell '+VERSION)
-    parser.add_argument('--profile', '-p', help='Account profile; otherwise use this folder or ask')
-    sub = parser.add_subparsers(dest='action', required=True)
-    init_parser = sub.add_parser('init', help='Use the global persona in this folder')
-    init_parser.add_argument('--profile', '-p', dest='local_profile')
-    init_parser.add_argument('--no-shell', action='store_true', help='Skip shell startup file changes')
-    for action, description in (('shift', 'Create/select the global persona'), ('use', 'Use a persona in this folder')):
-        persona_parser = sub.add_parser(action, help=description)
-        persona_parser.add_argument('persona')
-        persona_parser.add_argument('--no-shell', action='store_true', help='Skip shell startup file changes')
-    add_parser = sub.add_parser('add', help='Connect a service for all folders of this profile')
-    add_parser.add_argument('services', nargs='+')
-    add_parser.add_argument('--user', help='Username option passed to the selected integration')
-    add_parser.add_argument('--set', action='append', default=[], dest='options', metavar='KEY=VALUE')
-    tools_parser = sub.add_parser('tools', help='Browse and enable tool integrations per persona')
-    tool_actions = tools_parser.add_subparsers(dest='tool_action', required=True)
-    tool_list = tool_actions.add_parser('list', help='List available and enabled integrations')
-    tool_list.add_argument('--json', action='store_true')
-    tool_list.add_argument('--all', action='store_true', help='Include shared dependency definitions')
-    tool_show = tool_actions.add_parser('show', help='Show a tool’s environment names and login definition')
-    tool_show.add_argument('tool')
-    tool_validate = tool_actions.add_parser('validate', help='Validate catalog definitions, or a local definition')
-    tool_validate.add_argument('path', nargs='?')
-    tool_install = tool_actions.add_parser('install', help='Enable integrations, without installing native executables')
-    tool_install.add_argument('tools', nargs='*')
-    tool_install.add_argument('--from', dest='source', help='Install a local tool.toml or tool directory')
-    tool_install.add_argument('--replace', action='store_true', help='Explicitly override an existing definition')
-    tool_remove = tool_actions.add_parser('remove', help='Disable integrations; keep saved credentials')
-    tool_remove.add_argument('tools', nargs='+')
-    tool_configure = tool_actions.add_parser('configure', help='Set persona-specific integration options')
-    tool_configure.add_argument('tool')
-    tool_configure.add_argument('--set', action='append', default=[], dest='options', metavar='KEY=VALUE', required=True)
-    clean_parser = sub.add_parser('clean', help='Unlink this folder; --global clears profile logins')
-    clean_parser.add_argument('--global', dest='globally', action='store_true')
-    sub.add_parser('status', help='Show profile paths, never credentials')
-    sub.add_parser('setup', help='Install shell integration without linking a folder')
-    hook_parser = sub.add_parser('hook', help='Print shell integration')
-    hook_parser.add_argument('shell', choices=('zsh', 'bash'))
-    exec_parser = sub.add_parser('exec', help='Select a profile explicitly for an isolated runner')
-    exec_parser.add_argument('command', nargs=argparse.REMAINDER)
-    opts = parser.parse_args(args)
-    if opts.action == 'tools':
-        tools_command(opts)
-        return
-    if opts.action == 'hook':
-        print(hook(opts.shell), end='')
-        return
-    if opts.action == 'setup':
-        mkdir(root())
-        install_shell()
-        return
-    if opts.action == 'init':
-        name = getattr(opts, 'local_profile', None) or opts.profile or settings()['global_persona'] or 'personal'
-        if settings()['global_persona'] is None:
-            shift(name, no_shell=True)
-        init(name, opts.no_shell)
-        return
-    if opts.action in ('shift', 'use'):
-        if opts.action == 'shift':
-            shift(opts.persona, opts.no_shell)
-        else:
-            init(opts.persona, opts.no_shell)
-        return
-    name = choose(opts.profile)
-    if opts.action == 'add':
-        options = key_values(opts.options)
-        if opts.user:
-            options['user'] = opts.user
-        add(name, opts.services, options)
-    elif opts.action == 'clean':
-        clean(name, opts.globally)
-    elif opts.action == 'status':
-        directory = profile_dir(name)
-        config = read_config(name)
-        active, source, folder = effective()
-        print(json.dumps({'profile': name, 'active_persona': active, 'source': source,
-                          'global_persona': settings()['global_persona'],
-                          'folder': str(folder) if folder else None,
-                          'storage': str(directory), 'tools': registry().enabled(config)}, indent=2))
-    elif opts.action == 'exec':
-        command = opts.command[1:] if opts.command[:1] == ['--'] else opts.command
-        if not command:
-            raise ValueError('Supply a command after exec.')
-        os.execvpe(command[0], command, environment(name))
-
-
 def entrypoint():
-    try:
-        main()
-    except (OSError, ValueError, KeyError, subprocess.CalledProcessError) as error:
-        print(f'loki: {error}', file=sys.stderr)
-        sys.exit(1)
+    os.umask(0o077)
+    from .commands import main
+    main(prog_name='loki')

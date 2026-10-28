@@ -1,5 +1,6 @@
 """Discover tool-owned definitions and compose only enabled integrations."""
 import importlib.util
+from collections.abc import MutableMapping
 import json
 import os
 from pathlib import Path, PurePosixPath
@@ -198,16 +199,44 @@ class Context:
         subprocess.run(argv, env=env, check=True)
 
 
+class ToolCatalog(MutableMapping):
+    """Discover paths cheaply; parse only the integrations an operation needs."""
+    def __init__(self):
+        self.paths, self.loaded = {}, {}
+
+    def __getitem__(self, name):
+        if name not in self.loaded:
+            path, origin = self.paths[name]
+            tool = Tool(path, origin)
+            if path.parent.name != tool.id:
+                raise ValueError(f'{path}: the directory name must match id = {tool.id!r}')
+            self.loaded[name] = tool
+        return self.loaded[name]
+
+    def __setitem__(self, name, tool):
+        self.paths[name] = (tool.path, tool.origin)
+        self.loaded[name] = tool
+
+    def __delitem__(self, name):
+        del self.paths[name]
+        self.loaded.pop(name, None)
+
+    def __iter__(self):
+        return iter(self.paths)
+
+    def __len__(self):
+        return len(self.paths)
+
+    def __contains__(self, name):
+        return name in self.paths
+
+
 class Registry:
     def __init__(self, user_root, catalog=CATALOG):
-        self.user_root, self.tools = Path(user_root), {}
+        self.user_root, self.tools = Path(user_root), ToolCatalog()
         for directory, origin in ((Path(catalog), 'bundled'), (self.user_root / 'tools', 'user')):
             for path in sorted(directory.glob('*/tool.toml')):
-                tool = Tool(path, origin)
-                if path.parent.name != tool.id:
-                    raise ValueError(f'{path}: the directory name must match id = {tool.id!r}')
-                self.tools[tool.id] = tool
-        self.resolve(list(self.tools))
+                self.tools.paths[path.parent.name] = (path, origin)
 
     def get(self, name):
         if name not in self.tools:
@@ -218,7 +247,7 @@ class Registry:
         return [name for name, tool in self.tools.items() if tool.data.get('legacy_default', False)]
 
     def roots(self, config):
-        return config.get('tools', self.legacy_roots())
+        return config['tools'] if 'tools' in config else self.legacy_roots()
 
     def resolve(self, names):
         ordered, active = [], set()
@@ -302,7 +331,7 @@ class Registry:
                 raise ValueError('Other enabled tools still require: '+', '.join(sorted(still_needed)))
             config['tools'] = roots
 
-    def cleanup(self, core, persona):
+    def cleanup_contexts(self, core, persona):
         config = core.read_config(persona)
         managed = list(dict.fromkeys([*config.get('managed_tools', []), *self.enabled(config)]))
         contexts = [Context(core, self.get(name), persona) for name in self.resolve(managed)]
@@ -313,6 +342,11 @@ class Registry:
                 context.path(part)
             if cleanup.get('when_nonempty'):
                 context.path(cleanup['when_nonempty'])
+        return contexts
+
+    def cleanup(self, core, persona):
+        config = core.read_config(persona)
+        contexts = self.cleanup_contexts(core, persona)
         failures = []
         for context in reversed(contexts):
             tool, cleanup = context.tool, context.tool.data.get('cleanup', {})
@@ -352,7 +386,7 @@ class Registry:
         old = self.tools.get(tool.id)
         self.tools[tool.id] = tool
         try:
-            self.resolve(list(self.tools))
+            self.resolve([tool.id])
         except Exception:
             if old is None:
                 self.tools.pop(tool.id)

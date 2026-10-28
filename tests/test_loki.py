@@ -36,7 +36,7 @@ for key in ['FIREBASE_TOKEN','ANTHROPIC_API_KEY','OPENAI_API_KEY','CODEX_SQLITE_
 print(n)
 '''
         def check(name):
-            return self.run_loki('--profile', name, 'exec', 'python3', '-c', probe).stdout.strip()
+            return self.run_in_persona(name, 'python3', '-c', probe).stdout.strip()
         with ThreadPoolExecutor(max_workers=2) as pool:
             self.assertEqual(set(pool.map(check, ('personal', 'work'))), {'personal', 'work'})
 
@@ -44,8 +44,8 @@ print(n)
         project = self.projects['personal']
         original = 'export PROJECT_SETTING=keep\n'
         (project / '.envrc').write_text(original)
-        self.run_loki('init', '--profile', 'personal', '--no-shell')
-        self.run_loki('init', '--profile', 'personal', '--no-shell')
+        self.run_loki('use', 'personal', '--no-shell')
+        self.run_loki('use', 'personal', '--no-shell')
         self.assertEqual((project / '.envrc').read_text().count('# BEGIN lokishell'), 1)
         token = self.directory('personal') / 'auth/github-token'
         token.write_text('fictional-personal')
@@ -69,8 +69,8 @@ print(n)
                                 cwd=self.projects['personal'], env=env, check=True, text=True, capture_output=True)
         self.assertIn('profile=personal', result.stdout)
 
-    def test_global_shift_creates_persona_and_folder_override_wins(self):
-        self.run_loki('shift','other','--no-shell',cwd=self.base)
+    def test_global_use_creates_persona_and_folder_override_wins(self):
+        self.run_loki('use','other','--global','--no-shell',cwd=self.base)
         outside=json.loads(self.run_loki('status',cwd=self.base).stdout)
         self.assertEqual(outside['active_persona'],'other')
         self.assertEqual(outside['source'],'global')
@@ -78,14 +78,14 @@ print(n)
         self.assertEqual(inside['active_persona'],'work')
         self.assertEqual(inside['global_persona'],'other')
         fresh=self.base/'fresh'; fresh.mkdir()
-        self.run_loki('init','--no-shell',cwd=fresh)
+        self.run_loki('use','--no-shell',cwd=fresh)
         self.assertEqual(json.loads(self.run_loki('status',cwd=fresh).stdout)['profile'],'other')
 
     @unittest.skipUnless(shutil.which('zsh'), 'zsh not available')
     def test_global_environment_outside_folders_and_live_shift(self):
         dot=self.base/'global-zdot'; dot.mkdir()
         (dot/'.zshenv').write_text(self.run_loki('hook','zsh').stdout)
-        command='echo "$LOKI_PROFILE"; loki shift work --no-shell; echo "active=$LOKI_PROFILE"'
+        command='echo "$LOKI_PROFILE"; loki use work --global --no-shell; echo "active=$LOKI_PROFILE"'
         result=subprocess.run(['zsh','-c',command],cwd=self.base,env=dict(self.env,ZDOTDIR=str(dot)),
                               check=True,text=True,capture_output=True)
         self.assertTrue(result.stdout.startswith('personal\n'))
@@ -163,7 +163,7 @@ print(n)
         self.assertEqual((work/'gcloud/credentials.db').read_text(), 'fictional-work')
         self.assertEqual((personal/'codex/history.jsonl').read_text(), 'keep history')
         self.assertTrue((self.projects['personal']/'.envrc').exists())
-        result=self.run_loki('exec','python3','-c','import os; print(os.environ["GH_TOKEN"])')
+        result=self.run_in_persona('personal','python3','-c','import os; print(os.environ["GH_TOKEN"])')
         self.assertEqual(result.stdout.strip(),'loki-login-required')
         calls=(self.base/'calls.jsonl').read_text()
         self.assertIn('"logout", "tickets"',calls)
@@ -177,18 +177,18 @@ print(n)
 
     def test_git_credential_helper_is_scoped_to_github(self):
         (self.directory('personal')/'auth/github-token').write_text('fictional-personal')
-        result=self.run_loki('exec',str(LOKI),'_git-credential','get',input='protocol=https\nhost=github.com\n\n')
+        result=self.run_in_persona('personal',str(LOKI),'_git-credential','get',input='protocol=https\nhost=github.com\n\n')
         self.assertIn('password=fictional-personal',result.stdout)
-        result=self.run_loki('exec',str(LOKI),'_git-credential','get',input='protocol=https\nhost=other.example\n\n')
+        result=self.run_in_persona('personal',str(LOKI),'_git-credential','get',input='protocol=https\nhost=other.example\n\n')
         self.assertEqual(result.stdout,'')
 
-    def test_init_and_clean_preserve_foreign_files_and_other_profiles(self):
+    def test_use_and_clean_preserve_foreign_files_and_other_profiles(self):
         result=self.run_loki('--profile','work','clean',check=False)
         self.assertNotEqual(result.returncode,0)
         (self.projects['personal']/'.envrc').unlink()
         target=self.base/'preserved'; target.write_text('preserve')
         (self.projects['personal']/'.envrc').symlink_to(target)
-        result=self.run_loki('init','--profile','personal','--no-shell',check=False)
+        result=self.run_loki('use','personal','--no-shell',check=False)
         self.assertNotEqual(result.returncode,0)
         self.assertEqual(target.read_text(),'preserve')
 

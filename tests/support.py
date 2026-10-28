@@ -28,6 +28,8 @@ class LokiFixture(unittest.TestCase):
                         OPENAI_API_KEY='wrong-inherited-key', CODEX_SQLITE_HOME='/wrong/sqlite',
                         CLOUDSDK_AUTH_ACCESS_TOKEN='wrong-inherited-token',
                         GOOGLE_APPLICATION_CREDENTIALS='/wrong/adc', FAKE_LOG=str(self.base / 'calls.jsonl'))
+        for key in ('ZDOTDIR', 'BASH_ENV', 'ENV', 'LOKI_ENV_STATE', 'LOKI_PROFILE'):
+            self.env.pop(key, None)
         for name in ('firebase', 'gcloud', 'claude', 'codex', 'gh'):
             script = self.fake / name
             script.write_text('''#!/usr/bin/env python3
@@ -46,11 +48,12 @@ else:
 ''')
             script.chmod(0o700)
         self.projects = {}
+        self.run_loki('use', 'personal', '--global', '--no-shell')
         for name in ('personal', 'work', 'personal-two'):
             project = self.base / name
             project.mkdir()
             self.projects[name] = project
-            self.run_loki('init', '--profile', name.split('-')[0], '--no-shell', cwd=project)
+            self.run_loki('use', name.split('-')[0], '--no-shell', cwd=project)
         for persona in ('personal', 'work'):
             if self.initial_tools:
                 self.run_loki('--profile', persona, 'tools', 'install', *self.initial_tools)
@@ -67,3 +70,10 @@ else:
 
     def directory(self, name):
         return self.store / 'profiles' / name
+
+
+    def run_in_persona(self, persona, *args, cwd=None, env=None, check=True, input=None):
+        script = 'loki_test_env="$("$1" _env "$2")" || exit; eval "$loki_test_env"; shift 2; "$@"'
+        return subprocess.run(['bash', '--noprofile', '--norc', '-c', script, 'bash', str(LOKI), persona, *args],
+                              cwd=cwd or self.projects.get('personal', self.base), env=env or self.env,
+                              text=True, capture_output=True, check=check, input=input)

@@ -128,11 +128,14 @@ Use `tools/github/adapter.py` for a real example: it imports an explicitly named
 ## Test and submit
 
 ```sh
-bin/loki tools validate
+python3 -m pip install -r requirements.txt
+bin/loki tools validate --all
 python3 -m unittest discover -s tests -v
 ```
 
 `tools/*/test_*.py` files are discovered automatically. Tests can use `tests.support.LokiFixture` with `initial_tools = ("your-tool",)` for disposable personas and command stubs. Add any extra native-command stub your tool needs. Use fictional credentials and mock network calls. Never run real login or logout commands against a contributor's account.
+
+Plain `loki tools validate` checks only the current persona's enabled definitions and dependencies. Use `--all` when checking a contribution against the whole catalog. Click commands live in `lib/lokishell/commands.py`; ordinary tool contributions do not need to change them.
 
 Cover the integration's meaningful boundaries: intended storage location, conflicting inherited credentials, account verification where applicable, and cleanup scope. Describe any browser, Keychain, or hosted-connector state the integration cannot isolate or clear.
 

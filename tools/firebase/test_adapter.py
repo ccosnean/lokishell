@@ -13,5 +13,5 @@ class FirebaseTests(LokiFixture):
             self.skipTest('Optional installed Firebase library check')
         for name in ('personal','work'):
             expression='process.stdout.write(require('+json.dumps(module_path)+').configstore.path)'
-            result=self.run_loki('--profile',name,'exec','node','-e',expression)
+            result=self.run_in_persona(name,'node','-e',expression)
             self.assertEqual(result.stdout,str(self.directory(name)/'xdg/configstore/firebase-tools.json'))

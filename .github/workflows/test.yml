@@ -23,7 +23,9 @@ jobs:
             sudo apt-get update
             sudo apt-get install -y direnv zsh
           fi
+      - name: Install Python dependencies
+        run: python3 -m pip install -r requirements.txt
       - name: Test tool definitions, isolated profiles, and shells
         run: |
-          bin/loki tools validate
+          bin/loki tools validate --all
           python3 -m unittest discover -s tests -v
