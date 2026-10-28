@@ -107,9 +107,41 @@ Launch agents from an initialized terminal. Existing desktop app accounts and ho
 
 Reset requires two interactive confirmations. With shell integration loaded, it unloads the current terminal's Loki hooks immediately; other terminals unload at their next prompt or directory change. Stop running agents first. Preserved `.envrc` files may need `direnv allow` again. Local cleanup does not revoke browser sessions or provider-side grants.
 
-## Storage and scope
+## How it works
 
-State lives in `~/.config/lokishell/`, overridable with `LOKI_HOME`. Project `.envrc` files point to shared personas and preserve unrelated project settings. Direnv still controls project environment approval.
+The shell hook refreshes the selected persona on startup, directory changes, and prompts. It loads project settings through direnv, then exports the enabled tools' configuration paths. Native commands inherit those paths. Switching personas restores the previous values of variables no longer managed by Loki.
+
+For example, starting with a new `work` persona:
+
+```sh
+cd ~/work/acme-api
+loki use work
+loki add gcloud
+gcloud config set project acme-dev
+```
+
+Loki's store defaults to `~/.config/lokishell/`; `LOKI_HOME` can override it. After this example, its main files are:
+
+```text
+~/.config/lokishell/
+  settings.json                 # global persona, folder/worktree assignments, shell setup
+  profiles/work/
+    profile.json                # enabled integrations and their settings
+    env.sh                      # generates this persona's environment exports
+    gcloud/                     # Google CLI credentials, configuration, and logs
+      configurations/config_default
+
+~/work/acme-api/.envrc          # marked pointer to the shared work persona
+```
+
+| Command | What changes |
+| --- | --- |
+| `loki use work` | Creates the persona, records the folder assignment, and adds a marked block to the project's `.envrc`, preserving existing content. |
+| `loki add gcloud` | Enables the integration in `profile.json` and runs Google's login with `CLOUDSDK_CONFIG` pointing to `profiles/work/gcloud/`. Login saves credentials and account settings there. |
+| `gcloud config set project acme-dev` | Writes the project setting into that persona's active gcloud configuration. Other folders using `work` share it. |
+| `cd ~/projects/side-project` | Refreshes the shell environment for that folder's persona; it does not copy credentials between folders. |
+
+`loki use` also installs marked startup blocks in `.zshenv`/`.zshrc` or `.bashrc`/`.bash_profile`; `--no-shell` skips this. Existing shell settings and direnv hooks remain. Other integrations use their own paths under the persona directory, such as `codex/` and `claude/`. Only enabled integrations and their dependencies contribute exports. Direnv still controls project environment approval.
 
 Personas share your OS user's permissions. Credentials use native stores or private local files; LokiShell does not encrypt those files. See each [integration's documentation](tools/) for supported login modes and cleanup limits.
 
