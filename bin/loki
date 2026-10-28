@@ -1,6 +1,8 @@
 #!/usr/bin/env python3
 """LokiShell: folder-selected account environments for command-line tools."""
 import argparse
+from contextlib import contextmanager
+import fcntl
 import getpass
 import json
 import os
@@ -10,11 +12,12 @@ import shlex
 import shutil
 import subprocess
 import sys
+import tempfile
 import time
 import urllib.error
 import urllib.request
 
-VERSION = '0.1.0'
+VERSION = '0.2.0'
 BEGIN, END = '# BEGIN lokishell', '# END lokishell'
 SERVICES = ('firebase', 'github', 'gcloud', 'adc', 'claude', 'codex')
 NAME = re.compile(r'^[a-zA-Z0-9][a-zA-Z0-9_-]{0,63}$')
@@ -30,8 +33,15 @@ def executable():
 
 def write(path, text):
     check_storage_path(path)
-    path.write_text(text)
-    path.chmod(0o600)
+    # Readers in other shells must see either complete version, never partial JSON.
+    with tempfile.NamedTemporaryFile(mode='w', dir=path.parent, delete=False) as output:
+        temporary = Path(output.name)
+        output.write(text)
+    try:
+        temporary.chmod(0o600)
+        temporary.replace(path)
+    finally:
+        temporary.unlink(missing_ok=True)
 
 
 def mkdir(path):
@@ -59,6 +69,62 @@ def profile_dir(name):
         if path.is_symlink():
             raise ValueError(f'Account storage must not be a symlink: {path}')
     return root() / 'profiles' / name
+
+
+def settings():
+    path = root() / 'settings.json'
+    return json.loads(path.read_text()) if path.exists() else {
+        'global_persona': None, 'folders': {}, 'repositories': {}}
+
+
+@contextmanager
+def edit_settings():
+    mkdir(root())
+    path = root() / '.settings.lock'
+    check_storage_path(path)
+    with path.open('a') as lock:
+        path.chmod(0o600)
+        fcntl.flock(lock, fcntl.LOCK_EX)
+        value = settings()
+        try:
+            yield value
+            write(root() / 'settings.json', json.dumps(value, indent=2) + '\n')
+        finally:
+            fcntl.flock(lock, fcntl.LOCK_UN)
+
+
+def git_context():
+    if not shutil.which('git'):
+        return None
+    env = {k: v for k, v in os.environ.items() if k not in ('GIT_DIR', 'GIT_WORK_TREE', 'GIT_COMMON_DIR')}
+    result = subprocess.run(['git', 'rev-parse', '--path-format=absolute', '--git-common-dir', '--show-toplevel'],
+                            env=env, capture_output=True, text=True)
+    lines = result.stdout.splitlines()
+    if result.returncode == 0 and len(lines) == 2:
+        return Path(lines[0]).resolve(), Path(lines[1]).resolve()
+    return None
+
+
+def effective():
+    value = settings()
+    current = Path.cwd().resolve()
+    context = git_context()
+    for directory in (current, *current.parents):
+        if str(directory) in value['folders']:
+            persona = value['folders'][str(directory)]
+            if persona is None:
+                return value['global_persona'], 'global (folder override removed)', directory
+            return persona, 'folder', directory
+        path = directory / '.envrc'
+        if path.is_file():
+            found = block(path.read_text())
+            if found:
+                match = re.search(r'^# profile: (.+)$', found.group(), re.M)
+                if match:
+                    return match.group(1), 'folder', directory
+        if context and directory == context[1] and str(context[0]) in value['repositories']:
+            return value['repositories'][str(context[0])], 'repository/worktree', context[1]
+    return value['global_persona'], 'global', None
 
 
 def read_config(name):
@@ -168,28 +234,13 @@ def block(text):
     return match
 
 
-def binding(start=None):
-    current = Path(start or Path.cwd()).resolve()
-    for directory in (current, *current.parents):
-        file = directory / '.envrc'
-        if file.is_file():
-            match = block(file.read_text())
-            if match:
-                identity = re.search(r'^# profile: (.+)$', match.group(), re.M)
-                if identity:
-                    return directory, identity.group(1)
-            # A nearer .envrc takes precedence in direnv; do not guess parent inheritance.
-            return None
-    return None
-
-
 def choose(explicit=None):
     if explicit:
         profile_dir(explicit)
         return explicit
-    selected = binding()
+    selected, _, _ = effective()
     if selected:
-        return selected[1]
+        return selected
     if not sys.stdin.isatty():
         raise ValueError('Choose a profile explicitly: --profile personal or --profile work.')
     value = input('Profile [personal/work, or a new name]: ').strip()
@@ -211,6 +262,13 @@ def init(name, no_shell=False):
     else:
         updated = previous + ('\n' if previous and not previous.endswith('\n') else '') + content
     write(path, updated)
+    context = git_context()
+    with edit_settings() as value:
+        value['folders'][str(Path.cwd().resolve())] = name
+        if context and context[1] == Path.cwd().resolve():
+            common, top = context
+            if str(common) not in value['repositories'] or common == top / '.git':
+                value['repositories'][str(common)] = name
     subprocess.run(['direnv', 'allow', str(Path.cwd())], check=True)
     subprocess.run(['direnv', 'allow', str(directory)], check=True)
     if not no_shell:
@@ -219,13 +277,25 @@ def init(name, no_shell=False):
     print(f'Logins are shared by every folder linked to {name}. Run loki add SERVICE to connect one.')
 
 
+def shift(name, no_shell=False):
+    create_profile(name)
+    with edit_settings() as value:
+        value['global_persona'] = name
+    if not no_shell:
+        install_shell()
+    print(f'Global persona → {name}')
+    active, source, _ = effective()
+    if active != name:
+        print(f'This {source} continues to use {active}.')
+
+
 def hook(shell):
     loki, direnv = shlex.quote(executable()), shlex.quote(shutil.which('direnv') or 'direnv')
     if shell == 'zsh':
         return f'''# LokiShell: interactive prompts and fresh noninteractive agent shells.
 +if [[ -z ${{_loki_zsh_loaded-}} ]]; then
 +  typeset _loki_zsh_loaded=1
-+  _loki_refresh() {{ eval "$({direnv} export zsh)"; }}
++  _loki_refresh() {{ eval "$({direnv} export zsh)"; eval "$({loki} _effective-env)"; }}
 +  loki() {{ command {loki} "$@"; local loki_rc=$?; _loki_refresh; return $loki_rc; }}
 +  typeset -ga chpwd_functions precmd_functions
 +  chpwd_functions+=(_loki_refresh)
@@ -236,7 +306,7 @@ def hook(shell):
     if shell == 'bash':
         return f'''if [ -z "${{_loki_bash_loaded-}}" ]; then
 +  _loki_bash_loaded=1
-+  _loki_refresh() {{ eval "$({direnv} export bash)"; }}
++  _loki_refresh() {{ eval "$({direnv} export bash)"; eval "$({loki} _effective-env)"; }}
 +  loki() {{ command {loki} "$@"; local loki_rc=$?; _loki_refresh; return "$loki_rc"; }}
 +  cd() {{ builtin cd "$@" || return; _loki_refresh; }}
 +  eval "$({direnv} hook bash)"
@@ -339,20 +409,27 @@ def add(name, services, username=None):
 def clean(name, globally=False):
     if not globally:
         path = Path.cwd() / '.envrc'
-        if path.is_symlink() or not path.is_file():
-            raise ValueError('Run clean from the folder where you ran loki init.')
-        text = path.read_text()
+        if path.is_symlink():
+            raise ValueError('Refusing to replace a symlinked .envrc.')
+        active, source, origin = effective()
+        if active != name or origin != Path.cwd().resolve():
+            raise ValueError('Run clean from the linked folder or worktree root. Nothing changed.')
+        text = path.read_text() if path.exists() else ''
         found = block(text)
-        if not found or f'# profile: {name}\n' not in found.group():
+        if found and f'# profile: {name}\n' not in found.group():
             raise ValueError('This folder has no matching LokiShell pointer. Nothing changed.')
-        remaining = text[:found.start()] + text[found.end():]
-        if remaining.strip():
-            write(path, remaining)
-            subprocess.run(['direnv', 'allow', str(Path.cwd())], check=True)
-        else:
-            path.unlink()
+        if found:
+            remaining = text[:found.start()] + text[found.end():]
+            if remaining.strip():
+                write(path, remaining)
+                subprocess.run(['direnv', 'allow', str(Path.cwd())], check=True)
+            else:
+                path.unlink()
+        with edit_settings() as value:
+            # This opt-out keeps repository inheritance active for the other worktrees.
+            value['folders'][str(Path.cwd().resolve())] = None
         print(f'Unlinked this folder. Shared {name} logins and other folders are unchanged.')
-        print('The shell returns to its inherited/default environment.')
+        print('This folder now follows the global persona.')
         return
     directory, config, failures = profile_dir(name), read_config(name), []
     # Preflight every managed location before making a partially completed reset.
@@ -407,8 +484,11 @@ def git_credential():
 def main():
     os.umask(0o077)
     args = sys.argv[1:]
-    if args and args[0] == '_env':
-        remove, values = changes(args[1])
+    if args and args[0] in ('_env', '_effective-env'):
+        name = args[1] if args[0] == '_env' else effective()[0]
+        if not name:
+            return
+        remove, values = changes(name)
         for key in sorted(remove):
             if re.fullmatch(r'[A-Za-z_][A-Za-z0-9_]*', key):
                 print('unset '+key)
@@ -419,13 +499,17 @@ def main():
         if len(args) == 1 or args[1] == 'get':
             git_credential()
         return
-    parser = argparse.ArgumentParser(description='Folder-selected personal and work accounts for CLI tools.')
+    parser = argparse.ArgumentParser(description='Shapeshift CLI personas globally, by folder, and across worktrees.')
     parser.add_argument('--version', action='version', version='LokiShell '+VERSION)
     parser.add_argument('--profile', '-p', help='Account profile; otherwise use this folder or ask')
     sub = parser.add_subparsers(dest='action', required=True)
-    init_parser = sub.add_parser('init', help='Link this folder to a shared account profile')
+    init_parser = sub.add_parser('init', help='Use the global persona in this folder')
     init_parser.add_argument('--profile', '-p', dest='local_profile')
     init_parser.add_argument('--no-shell', action='store_true', help='Skip shell startup file changes')
+    for action, description in (('shift', 'Create/select the global persona'), ('use', 'Use a persona in this folder')):
+        persona_parser = sub.add_parser(action, help=description)
+        persona_parser.add_argument('persona')
+        persona_parser.add_argument('--no-shell', action='store_true', help='Skip shell startup file changes')
     add_parser = sub.add_parser('add', help='Connect a service for all folders of this profile')
     add_parser.add_argument('services', nargs='+')
     add_parser.add_argument('--user', help='GitHub username')
@@ -445,17 +529,30 @@ def main():
         mkdir(root())
         install_shell()
         return
-    name = choose(getattr(opts, 'local_profile', None) or opts.profile)
     if opts.action == 'init':
+        name = getattr(opts, 'local_profile', None) or opts.profile or settings()['global_persona'] or 'personal'
+        if settings()['global_persona'] is None:
+            shift(name, no_shell=True)
         init(name, opts.no_shell)
-    elif opts.action == 'add':
+        return
+    if opts.action in ('shift', 'use'):
+        if opts.action == 'shift':
+            shift(opts.persona, opts.no_shell)
+        else:
+            init(opts.persona, opts.no_shell)
+        return
+    name = choose(opts.profile)
+    if opts.action == 'add':
         add(name, opts.services, opts.user)
     elif opts.action == 'clean':
         clean(name, opts.globally)
     elif opts.action == 'status':
         directory = profile_dir(name)
         config = read_config(name)
-        print(json.dumps({'profile': name, 'folder': str(binding()[0]) if binding() else None,
+        active, source, folder = effective()
+        print(json.dumps({'profile': name, 'active_persona': active, 'source': source,
+                          'global_persona': settings()['global_persona'],
+                          'folder': str(folder) if folder else None,
                           'storage': str(directory), 'github_user': config.get('github_user'),
                           'github_connected': (directory / 'auth/github-token').is_file()}, indent=2))
     elif opts.action == 'exec':

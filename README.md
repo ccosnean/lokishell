@@ -1,6 +1,6 @@
 # LokiShell
 
-Use personal and work accounts side by side. A folder points to a shared account profile; ordinary commands use that profile through direnv.
+Use personal and work personas side by side. Choose a global default, override it by folder, and carry repository personas into Git worktrees. Ordinary commands use the selected account environment.
 
 LokiShell is a command-line account and environment manager for **zsh and bash**. The executable is `loki`.
 
@@ -12,22 +12,15 @@ brew install ccosnean/tap/lokishell
 
 The Homebrew formula installs LokiShell, Python, and direnv. Install the service CLIs you use separately.
 
-## Start in a project
+## Start
 
 ```sh
-cd ~/projects/my-project
-loki init
+loki shift personal
 ```
 
-Choose `personal`, `work`, or another profile name. Alternatively:
+Creates `personal` if needed and makes it the global persona. Ordinary commands outside a configured folder now use personal credentials. The first setup installs shell hooks: **open a new terminal once** to activate newly installed hooks. A command cannot change its parent shell's environment by itself.
 
-```sh
-loki init --profile personal
-```
-
-The first initialization installs shell hooks. **Open a new terminal once** to activate newly installed hooks. If the current shell already uses direnv, it can load the folder immediately. A command cannot change its parent shell's environment by itself.
-
-Connect accounts once per profile:
+Connect accounts once per persona, from any folder using it:
 
 ```sh
 loki add firebase
@@ -38,17 +31,47 @@ loki add claude
 loki add codex
 ```
 
-Then run ordinary commands:
+Set up a project with your global persona:
 
 ```sh
-firebase projects:list
-gcloud auth list
-git fetch
-claude
-codex
+cd ~/projects/my-project
+loki init
 ```
 
-Another folder initialized with the same profile shares those logins. A folder initialized with `work` uses independent stores. Concurrent shells can select different profiles.
+Use another persona in a folder:
+
+```sh
+cd ~/work/project
+loki use work
+firebase projects:list     # work
+cd /tmp
+firebase projects:list     # personal
+```
+
+`loki use` creates the persona if needed. `loki shift` changes the global default without overriding folders that already have a persona. `loki init` assigns the current global persona to the current folder. On a completely fresh setup, `loki init` creates a global `personal` persona automatically. The explicit `loki init --profile work` form is also supported.
+
+`loki status` shows the effective persona and whether it came from the folder, repository/worktree, or global default. To manage another persona without shifting or changing the folder:
+
+```sh
+loki --profile work add firebase
+```
+
+Logins belong to the shared persona, not the folder. Concurrent shells can use different personas.
+
+## Worktrees
+
+A persona assigned at a Git repository's main root becomes that repository's default. New and existing linked worktrees inherit it automatically, including worktrees created by coding agents. The association uses Git's common directory and is stored in LokiShell's global settings; no tracked files or Git configuration are required.
+
+```sh
+cd ~/work/project
+loki use work
+git worktree add ../feature-branch -b feature-branch
+cd ../feature-branch
+loki status               # work, inherited from the repository
+loki use personal         # override only this worktree
+```
+
+A worktree's own assignment wins over the repository default. A repository assignment wins over a surrounding folder's persona. The global persona applies where there is no folder or repository assignment. If a repository has no default yet, its first initialized worktree establishes one.
 
 ## Clean
 
@@ -56,7 +79,7 @@ Another folder initialized with the same profile shares those logins. A folder i
 loki clean
 ```
 
-Removes only this folder's LokiShell block from `.envrc`, preserving other project settings. Shared logins remain available in other linked folders. The shell returns to its inherited/default environment; this is not a ban on access from that folder.
+Removes only this folder's LokiShell block from `.envrc`, preserving other project settings. Shared logins remain available in other linked folders. This folder then follows the global persona; this is not a ban on access from that folder. Cleaning a worktree leaves the other worktrees and repository default unchanged.
 
 ```sh
 loki clean --global
@@ -66,7 +89,7 @@ Clears the selected profile's locally managed logins for every linked folder. Fo
 
 ## Agents and shells
 
-LokiShell installs a hook in `.zshenv` as well as `.zshrc`. Fresh zsh command shells launched by agents load the folder's environment, including noninteractive shells. Directory changes refresh the selection. Bash integration is installed in `.bash_profile` and `.bashrc`; arbitrary `bash -c` processes must inherit an initialized environment or load the hook.
+LokiShell installs a hook in `.zshenv` as well as `.zshrc`. Fresh zsh command shells launched by agents load the effective persona, including noninteractive shells and worktrees without an `.envrc`. Prompts and directory changes refresh selection, so other open terminals pick up a global shift at their next prompt. Bash integration is installed in `.bash_profile` and `.bashrc`; arbitrary `bash -c` processes must inherit an initialized environment or load the hook.
 
 An agent launched from an initialized terminal inherits the selected profile. An already-running desktop app's own account and hosted connections do not switch when its child shell changes directories. Runners that bypass startup files or sanitize the environment should use:
 
@@ -82,12 +105,13 @@ eval "$(loki hook zsh)"
 eval "$(loki hook bash)"
 ```
 
-`loki init --no-shell --profile personal` creates the folder pointer without editing startup files. Startup edits preserve other content and make backups. Initialize a child folder explicitly if it has its own `.envrc`; direnv does not automatically merge parent and child files.
+`loki init --no-shell --profile personal` creates the folder pointer without editing startup files. Startup edits preserve other content and make backups. LokiShell persona selection also applies beneath folders with their own `.envrc`. Direnv still governs the project's other environment variables and its normal trust/allow mechanism.
 
 ## What is stored where
 
 ```text
 ~/.config/lokishell/
+  settings.json             # global persona, folder pointers, repository/worktree associations
   profiles/
     personal/
       profile.json          # identity metadata; no tokens
@@ -100,7 +124,7 @@ eval "$(loki hook bash)"
     work/
   backups/                  # shell startup backups
 
-project/.envrc              # pointer to one shared profile
+project/.envrc              # direnv pointer to one shared persona
 ```
 
 `LOKI_HOME` can override the settings root. Its location is independent of `XDG_CONFIG_HOME`, so nested profile selection does not create nested stores. Profile directories are private to the current OS user (`0700`); files LokiShell creates are `0600`.
@@ -136,6 +160,6 @@ Python 3.11+ and direnv are required. No Python packages are needed.
 python3 -m unittest discover -s tests -v
 ```
 
-Tests use temporary settings and fictional credentials. They cover concurrent profiles, inherited-token removal, ordinary shell commands, folder cleanup, global reset, and failed logouts. They do not run live OAuth logins.
+Tests use temporary settings and fictional credentials. They cover concurrent personas and registry updates, global shifts, real Git worktrees, inherited-token removal, ordinary shell commands, folder cleanup, global reset, and failed logouts. They do not run live OAuth logins.
 
 References: [direnv](https://direnv.net/man/direnv.1.html), [Claude account directories](https://code.claude.com/docs/en/authentication), [Codex credential storage](https://learn.chatgpt.com/docs/auth).

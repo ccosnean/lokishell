@@ -114,7 +114,66 @@ print(n)
         self.assertEqual(result.stdout.splitlines(), ['personal', 'work'])
         result = subprocess.run(['zsh', '-c', 'loki clean; echo "profile=${LOKI_PROFILE-unset}"'],
                                 cwd=self.projects['personal'], env=env, check=True, text=True, capture_output=True)
-        self.assertIn('profile=unset', result.stdout)
+        self.assertIn('profile=personal', result.stdout)
+
+    def test_global_shift_creates_persona_and_folder_override_wins(self):
+        self.run_loki('shift','other','--no-shell',cwd=self.base)
+        outside=json.loads(self.run_loki('status',cwd=self.base).stdout)
+        self.assertEqual(outside['active_persona'],'other')
+        self.assertEqual(outside['source'],'global')
+        inside=json.loads(self.run_loki('status',cwd=self.projects['work']).stdout)
+        self.assertEqual(inside['active_persona'],'work')
+        self.assertEqual(inside['global_persona'],'other')
+        fresh=self.base/'fresh'; fresh.mkdir()
+        self.run_loki('init','--no-shell',cwd=fresh)
+        self.assertEqual(json.loads(self.run_loki('status',cwd=fresh).stdout)['profile'],'other')
+
+    @unittest.skipUnless(shutil.which('zsh'), 'zsh not available')
+    def test_global_environment_outside_folders_and_live_shift(self):
+        dot=self.base/'global-zdot'; dot.mkdir()
+        (dot/'.zshenv').write_text(self.run_loki('hook','zsh').stdout)
+        command='echo "$LOKI_PROFILE"; loki shift work --no-shell; echo "active=$LOKI_PROFILE"'
+        result=subprocess.run(['zsh','-c',command],cwd=self.base,env=dict(self.env,ZDOTDIR=str(dot)),
+                              check=True,text=True,capture_output=True)
+        self.assertTrue(result.stdout.startswith('personal\n'))
+        self.assertIn('active=work',result.stdout)
+
+    def test_worktrees_inherit_repository_persona_and_can_override_independently(self):
+        repo=self.base/'repo'; repo.mkdir()
+        git=['git','-c','user.name=Test Person','-c','user.email=test@example.invalid',
+             '-c','commit.gpgsign=false','-c','core.hooksPath=/dev/null']
+        subprocess.run(git+['init','-b','main'],cwd=repo,check=True,capture_output=True)
+        (repo/'file').write_text('fixture')
+        subprocess.run(git+['add','file'],cwd=repo,check=True,capture_output=True)
+        subprocess.run(git+['commit','-m','fixture'],cwd=repo,check=True,capture_output=True)
+        self.run_loki('use','work','--no-shell',cwd=repo)
+        tree=self.base/'tree'
+        subprocess.run(git+['worktree','add','-b','feature',str(tree)],cwd=repo,check=True,capture_output=True)
+        self.assertFalse((tree/'.envrc').exists())
+        status=json.loads(self.run_loki('status',cwd=tree).stdout)
+        self.assertEqual(status['profile'],'work')
+        self.assertEqual(status['source'],'repository/worktree')
+        if shutil.which('zsh'):
+            dot=self.base/'worktree-zdot'; dot.mkdir()
+            (dot/'.zshenv').write_text(self.run_loki('hook','zsh').stdout)
+            fresh=subprocess.run(['zsh','-c','echo "$LOKI_PROFILE"; echo "$CLOUDSDK_CONFIG"'],cwd=tree,
+                                 env=dict(self.env,ZDOTDIR=str(dot)),check=True,text=True,capture_output=True)
+            self.assertEqual(fresh.stdout.splitlines(),['work',str(self.directory('work')/'gcloud')])
+        self.run_loki('use','personal','--no-shell',cwd=tree)
+        self.assertEqual(json.loads(self.run_loki('status',cwd=repo).stdout)['profile'],'work')
+        self.assertEqual(json.loads(self.run_loki('status',cwd=tree).stdout)['profile'],'personal')
+        self.run_loki('clean',cwd=tree)
+        self.assertEqual(json.loads(self.run_loki('status',cwd=tree).stdout)['source'],'global (folder override removed)')
+        self.assertEqual(json.loads(self.run_loki('status',cwd=repo).stdout)['profile'],'work')
+
+    def test_concurrent_folder_registration_does_not_lose_pointers(self):
+        paths=[self.base/f'parallel-{i}' for i in range(6)]
+        for path in paths:
+            path.mkdir()
+        with ThreadPoolExecutor(max_workers=3) as pool:
+            list(pool.map(lambda path:self.run_loki('use','work','--no-shell',cwd=path),paths))
+        data=json.loads((self.store/'settings.json').read_text())
+        self.assertTrue(all(data['folders'][str(path)]=='work' for path in paths))
 
     def test_bash_commands_without_prefix(self):
         startup = self.base / 'bash-env'
