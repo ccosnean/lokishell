@@ -86,28 +86,64 @@ def tools_group():
 @click.option('--all', 'all_tools', is_flag=True, help='Include shared dependencies.')
 @click.option('--json', 'as_json', is_flag=True, help='Print machine-readable results.')
 def tools_list(all_tools, as_json):
-    """List available and enabled integrations."""
+    """List integrations installed for this persona."""
+    list_tools('installed', all_tools, as_json)
+
+
+@tools_group.command('catalog')
+@click.option('--all', 'all_tools', is_flag=True, help='Include shared dependencies.')
+@click.option('--json', 'as_json', is_flag=True, help='Print machine-readable results.')
+def tools_catalog(all_tools, as_json):
+    """Browse all bundled and locally added integrations."""
+    list_tools('catalog', all_tools, as_json)
+
+
+def list_tools(scope, all_tools, as_json):
     catalog = core.registry()
     persona = selected_profile() or core.effective()[0]
     config = core.read_config(persona) if persona else {'tools': []}
     enabled, selected = catalog.enabled(config), catalog.roots(config)
     rows = []
-    for tool in catalog.tools.values():
+    names = catalog.tools if scope == 'catalog' else enabled
+    for name in sorted(names):
+        tool = catalog.get(name)
         if tool.data.get('internal', False) and not all_tools:
             continue
         command = tool.data.get('cli', {}).get('command')
+        cli_path = shutil.which(command) if command else None
         rows.append({'id': tool.id, 'name': tool.data['name'], 'enabled': tool.id in enabled,
                      'selected': tool.id in selected, 'origin': tool.origin,
-                     'cli': command, 'cli_available': bool(shutil.which(command)) if command else True})
+                     'definition': str(tool.path), 'cli': command, 'cli_path': cli_path,
+                     'cli_available': bool(cli_path) if command else True})
     if as_json:
-        click.echo(json.dumps({'persona': persona, 'tools': rows, 'contribute_url': CONTRIBUTE_URL}, indent=2))
+        click.echo(json.dumps({'persona': persona, 'scope': scope, 'tools': rows,
+                               'contribute_url': CONTRIBUTE_URL}, indent=2))
         return
-    click.echo(f'Tools for {persona or "no selected persona"}:')
-    for row in rows:
-        state = 'enabled' if row['enabled'] else 'available'
-        native = '' if row['cli_available'] else ' (native CLI not installed)'
-        click.echo(f'  {row["id"]:12} {state:10} {row["name"]}{native}')
-    click.echo(f'\nContribute your tool: {CONTRIBUTE_URL}')
+    if rows:
+        from .table import echo_table
+        click.secho('Tool catalog' if scope == 'catalog' else f'Installed for {persona}', bold=True)
+        headers = ['Tool', 'Name']
+        cells = [[row['id'], row['name']] for row in rows]
+        if any(row['origin'] == 'user' for row in rows):
+            headers.append('Source')
+            for row, cell in zip(rows, cells):
+                path = Path(row['definition']).parent
+                home = Path.home()
+                source = str(Path('~') / path.relative_to(home)) if path.is_relative_to(home) else str(path)
+                cell.append(source if row['origin'] == 'user' else 'Bundled')
+        echo_table(headers, cells)
+    elif persona:
+        click.echo(f'No tools installed for {persona}.')
+    else:
+        click.echo('No persona selected. Run loki use NAME --global to get started.')
+    if scope == 'catalog':
+        click.echo('\nInstall an integration: loki tools install <tool>')
+        click.echo(f'Contribute your tool: {CONTRIBUTE_URL}')
+    else:
+        missing = [row['cli'] for row in rows if not row['cli_available']]
+        if missing:
+            click.echo('\nNative commands not found: '+', '.join(missing)+'. See loki tools show <tool>.')
+        click.echo('\nBrowse all integrations: loki tools catalog')
 
 
 @tools_group.command('show')
@@ -162,7 +198,7 @@ def tools_install(tools, source, replace):
     if replace and not source:
         raise click.UsageError('--replace requires --from PATH.')
     if not tools and not source:
-        raise click.UsageError('Name a tool or use --from PATH. See loki tools list.')
+        raise click.UsageError('Name a tool or use --from PATH. See loki tools catalog.')
     persona = core.choose(selected_profile())
     core.create_profile(persona)
     catalog = core.registry()
@@ -259,8 +295,18 @@ def env_command(persona):
 
 
 @main.command('_effective-env', hidden=True)
-def effective_env_command():
+@click.option('--shell', type=click.Choice(['zsh', 'bash']))
+@click.option('--session', 'previous_session', default='')
+def effective_env_command(shell, previous_session):
+    from .shell import session
+    current_session = session(core)
+    if shell and previous_session and previous_session != current_session:
+        emit_environment(None)
+        click.echo('_loki_unload')
+        return
     emit_environment(core.effective()[0])
+    if shell:
+        click.echo('_loki_session='+shlex.quote(current_session))
 
 
 @main.command('_tool', hidden=True)

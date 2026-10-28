@@ -59,9 +59,70 @@ class CommandTests(LokiFixture):
         self.assertNotEqual(full.returncode, 0)
         self.assertIn('broken', full.stderr)
 
-    def test_tool_list_links_contribution_guide(self):
-        self.assertIn(CONTRIBUTE_URL, self.run_loki('tools', 'list').stdout)
+    def test_tool_catalog_links_contribution_guide(self):
+        self.assertNotIn(CONTRIBUTE_URL, self.run_loki('tools', 'list').stdout)
+        self.assertIn(CONTRIBUTE_URL, self.run_loki('tools', 'catalog').stdout)
         self.assertEqual(json.loads(self.run_loki('tools', 'list', '--json').stdout)['contribute_url'], CONTRIBUTE_URL)
+
+    def test_tools_list_only_installed_integrations_for_selected_persona(self):
+        self.run_loki('tools', 'install', 'firebase')
+        self.run_loki('--profile', 'work', 'tools', 'install', 'github')
+        listing = self.run_loki('tools', 'list').stdout
+        self.assertIn('Installed for personal', listing)
+        self.assertIn('│ firebase', listing)
+        self.assertNotIn('available', listing)
+        self.assertNotIn('github', listing)
+        self.assertNotIn('google', listing)
+        self.assertNotIn('enabled', listing)
+        installed = json.loads(self.run_loki('tools', 'list', '--json').stdout)
+        self.assertEqual([tool['id'] for tool in installed['tools']], ['firebase'])
+        self.assertEqual(installed['scope'], 'installed')
+        dependencies = json.loads(self.run_loki('tools', 'list', '--all', '--json').stdout)
+        self.assertEqual([tool['id'] for tool in dependencies['tools']], ['firebase', 'google'])
+        work = json.loads(self.run_loki('--profile', 'work', 'tools', 'list', '--json').stdout)
+        self.assertEqual([tool['id'] for tool in work['tools']], ['github'])
+        self.run_loki('tools', 'remove', 'firebase')
+        self.assertEqual(json.loads(self.run_loki('tools', 'list', '--json').stdout)['tools'], [])
+        self.assertIn('No tools installed for personal', self.run_loki('tools', 'list').stdout)
+
+    def test_catalog_is_explicit_and_installed_list_ignores_unused_broken_definitions(self):
+        catalog = json.loads(self.run_loki('tools', 'catalog', '--json').stdout)
+        self.assertEqual({tool['id'] for tool in catalog['tools']},
+                         {'adc', 'claude', 'codex', 'firebase', 'gcloud', 'github'})
+        self.assertEqual(catalog['scope'], 'catalog')
+        catalog_all = json.loads(self.run_loki('tools', 'catalog', '--all', '--json').stdout)
+        self.assertIn('google', {tool['id'] for tool in catalog_all['tools']})
+        self.run_loki('tools', 'install', 'firebase')
+        broken = self.store / 'tools/broken'
+        broken.mkdir(parents=True)
+        (broken / 'tool.toml').write_text('invalid TOML')
+        self.assertIn('firebase', self.run_loki('tools', 'list').stdout)
+
+    def test_local_integrations_show_their_definition_directory_in_a_wrapped_table(self):
+        definition = self.base / 'acme'
+        definition.mkdir()
+        (definition / 'tool.toml').write_text('schema_version=1\nid="acme"\nname="Acme"\ndescription="Local tool"\n')
+        self.run_loki('tools', 'install', '--from', str(definition))
+        listing = json.loads(self.run_loki('tools', 'list', '--json').stdout)
+        self.assertEqual(listing['tools'][0]['origin'], 'user')
+        self.assertEqual(listing['tools'][0]['definition'], str(self.store / 'tools/acme/tool.toml'))
+        display = self.run_loki('tools', 'list', env=dict(self.env, COLUMNS='52')).stdout
+        self.assertIn('Source', display)
+        table_lines = [line for line in display.splitlines() if line.startswith(('│', '┌', '├', '└'))]
+        self.assertTrue(table_lines)
+        self.assertTrue(all(len(line) <= 52 for line in table_lines))
+        # Rejoin the wrapped source column to check that the path is complete.
+        cells = [line.split('│')[3].strip() for line in table_lines if line.startswith('│')][1:]
+        self.assertEqual(''.join(cells), str(self.store / 'tools/acme'))
+
+    def test_tools_browse_without_a_persona_does_not_create_a_store(self):
+        store = self.base / 'unused-store'
+        env = dict(self.env, LOKI_HOME=str(store))
+        self.assertIn('No persona selected', self.run_loki('tools', 'list', cwd=self.base, env=env).stdout)
+        catalog = json.loads(self.run_loki('tools', 'catalog', '--json', cwd=self.base, env=env).stdout)
+        self.assertIsNone(catalog['persona'])
+        self.assertTrue(catalog['tools'])
+        self.assertFalse(store.exists())
 
     def reset_cli(self, answer='', interactive=True):
         fake_home = self.base / 'shell-home'
@@ -98,6 +159,9 @@ class CommandTests(LokiFixture):
              patch.object(module.Path, 'home', return_value=fake_home), \
              patch('sys.argv', [str(LOKI)]), patch('sys.stdout', new=io.StringIO()):
             module.install_shell()
+        # Reset also removes duplicate blocks left by older/manual setup.
+        zshenv = fake_home / '.zshenv'
+        zshenv.write_text(zshenv.read_text() * 2)
         pointer = self.projects['personal'] / '.envrc'
         pointer.write_text(original + pointer.read_text())
         project_file = self.projects['personal'] / 'keep.txt'

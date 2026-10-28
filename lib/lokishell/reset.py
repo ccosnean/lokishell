@@ -52,9 +52,10 @@ def reset_plan(core):
                 continue
             raise ValueError(f'Refusing to change a linked setup file: {path}')
         previous = path.read_text()
-        found = core.block(previous)
-        if found:
-            remaining = previous[:found.start()] + previous[found.end():]
+        remaining = previous
+        while found := core.block(remaining):
+            remaining = remaining[:found.start()] + remaining[found.end():]
+        if remaining != previous:
             edits.append((path, previous, remaining))
     return storage, personas, edits, catalog
 
@@ -75,7 +76,8 @@ def reset(core):
         click.echo(f'  - {path}')
     if not edits:
         click.echo('  (no registered setup files found)')
-    click.echo('Project files, other shell settings, and installed CLI binaries are kept.')
+    click.echo('LokiShell stays installed. All of its data and shell integration will be removed.')
+    click.echo('Project files, other shell settings, and other installed CLI binaries are kept.')
     click.echo('Browser sessions and provider-side access grants are not revoked.')
     click.echo('Stop running agents before resetting; they may hold tokens or recreate files.')
     if not interactive_input():
@@ -115,4 +117,6 @@ def reset(core):
     if storage.exists():
         shutil.rmtree(storage)
     click.echo('LokiShell reset. All managed personas and data were removed.')
-    click.echo('Open a fresh terminal before setting up again. Preserved .envrc files may need direnv allow.')
+    click.echo('Loaded Loki hooks unload on their next refresh, immediately when run through the loki shell function.')
+    click.echo('Other open terminals unload at their next prompt or directory change. LokiShell stays installed.')
+    click.echo('Preserved .envrc files may need direnv allow.')

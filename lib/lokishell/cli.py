@@ -13,10 +13,11 @@ import subprocess
 import sys
 import tempfile
 import time
+import uuid
 
 from .registry import Registry, Context, ENV_NAME
 
-VERSION = '0.4.0'
+VERSION = '0.5.0'
 BEGIN, END = '# BEGIN lokishell', '# END lokishell'
 NAME = re.compile(r'^[a-zA-Z0-9][a-zA-Z0-9_-]{0,63}$')
 
@@ -84,6 +85,8 @@ def edit_settings():
         path.chmod(0o600)
         fcntl.flock(lock, fcntl.LOCK_EX)
         value = settings()
+        if not (root() / 'settings.json').exists():
+            value['shell_session'] = uuid.uuid4().hex
         try:
             yield value
             write(root() / 'settings.json', json.dumps(value, indent=2) + '\n')
@@ -328,30 +331,8 @@ def set_global(name, no_shell=False):
 
 
 def hook(shell):
-    loki, direnv = shlex.quote(executable()), shlex.quote(shutil.which('direnv') or 'direnv')
-    if shell == 'zsh':
-        return f'''# LokiShell: interactive prompts and fresh noninteractive agent shells.
-+if [[ -z ${{_loki_zsh_loaded-}} ]]; then
-+  typeset _loki_zsh_loaded=1
-+  _loki_refresh() {{ eval "$({direnv} export zsh)"; eval "$({loki} _effective-env)"; }}
-+  loki() {{ command {loki} "$@"; local loki_rc=$?; _loki_refresh; return $loki_rc; }}
-+  typeset -ga chpwd_functions precmd_functions
-+  chpwd_functions+=(_loki_refresh)
-+  precmd_functions+=(_loki_refresh)
-+  _loki_refresh
-+fi
-+'''.replace('\n+', '\n')
-    if shell == 'bash':
-        return f'''if [ -z "${{_loki_bash_loaded-}}" ]; then
-+  _loki_bash_loaded=1
-+  _loki_refresh() {{ eval "$({direnv} export bash)"; eval "$({loki} _effective-env)"; }}
-+  loki() {{ command {loki} "$@"; local loki_rc=$?; _loki_refresh; return "$loki_rc"; }}
-+  cd() {{ builtin cd "$@" || return; _loki_refresh; }}
-+  eval "$({direnv} hook bash)"
-+  _loki_refresh
-+fi
-+'''.replace('\n+', '\n')
-    raise ValueError('Supported shells: zsh, bash.')
+    from .shell import hook as shell_hook
+    return shell_hook(core_api(), shell)
 
 
 def install_shell():

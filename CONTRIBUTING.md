@@ -146,3 +146,5 @@ loki tools install --from ./my-tool
 ```
 
 This copies `tool.toml`, optional `adapter.py`, and optional `README.md` into `~/.config/lokishell/tools/<id>/`, then enables it for the selected persona. It does not automatically download remote code. Use `--replace` explicitly to override an existing definition. Other personas can enable the installed definition separately.
+
+`loki tools list` shows installed integrations for the selected persona; local definitions show their installed directory in the table's `Source` column. `loki tools catalog` browses all definitions. Both accept `--all` to include shared dependencies and `--json` for structured output.

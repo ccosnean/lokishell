@@ -240,7 +240,7 @@ class Registry:
 
     def get(self, name):
         if name not in self.tools:
-            raise ValueError(f'Unknown tool {name!r}. Run loki tools list.')
+            raise ValueError(f'Unknown tool {name!r}. Run loki tools catalog.')
         return self.tools[name]
 
     def legacy_roots(self):
