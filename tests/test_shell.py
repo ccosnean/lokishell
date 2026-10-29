@@ -104,7 +104,7 @@ class ShellTests(LokiFixture):
             preserved = '''[[ "$(declare -f cd)" == *'builtin cd'* ]] || exit 43
 [[ "${PROMPT_COMMAND[*]}" == 'user_prompt later_prompt' || "$PROMPT_COMMAND" == 'user_prompt;later_prompt' ]] || exit 44'''
         script = before + f'eval "$({cli} hook {shell})"\n' + later + '\n'
-        script += '[[ $LOKI_PROFILE == personal && $GH_TOKEN == loki-login-required ]] || exit 31\n'
+        script += '[[ $LOKI_PROFILE == personal && $GH_TOKEN == wrong-inherited-token ]] || exit 31\n'
         if external:
             # Simulate another terminal resetting and setting up again before our next prompt.
             script += f'command {cli} reset || exit 32\ncommand {cli} setup || exit 33\n_loki_refresh\n'
@@ -113,7 +113,7 @@ class ShellTests(LokiFixture):
         if answer.startswith('n'):
             script += '''[[ $reset_status != 0 ]] || exit 34
 typeset -f _loki_refresh >/dev/null || exit 35
-[[ $LOKI_PROFILE == personal && $GH_TOKEN == loki-login-required ]] || exit 36
+[[ $LOKI_PROFILE == personal && $GH_TOKEN == wrong-inherited-token ]] || exit 36
 '''
         else:
             script += '''typeset -f _loki_refresh >/dev/null && exit 37
@@ -179,7 +179,7 @@ typeset -f _loki_prompt >/dev/null && exit 39
             config / 'direnvrc': 'project_helper() { export HELPER_SETTING=custom; }\n',
             parent / '.envrc': 'export PARENT_SETTING=parent\n',
             project / '.envrc': 'source_up\ndotenv .env\nsource_env extra.envrc\nPATH_add bin\nproject_helper\n',
-            project / '.env': 'PROJECT_SETTING=dotenv\n',
+            project / '.env': 'PROJECT_SETTING=dotenv\nXDG_CONFIG_HOME=/independent/config\nGOOGLE_APPLICATION_CREDENTIALS=/independent/adc.json\nGOOGLE_CLOUD_PROJECT=independent-project\nOPENAI_API_KEY=fictional-independent-key\n',
             project / 'extra.envrc': 'export SOURCED_SETTING=sourced\n',
             unrelated / '.envrc': 'export UNRELATED_SETTING=untouched\n',
             project / 'keep.txt': 'project data\n',
@@ -205,7 +205,7 @@ assert 'LOKI_PROFILE' not in os.environ
                                 cwd=project, env=env, text=True, capture_output=True)
         self.assertEqual(before.returncode, 0, before.stderr)
         for args, cwd in [(('use', 'personal', '--global', '--no-shell'), case),
-                          (('tools', 'install', 'github'), case),
+                          (('tools', 'install', 'github', 'firebase', 'gcloud', 'claude', 'codex'), case),
                           (('use', 'personal', '--no-shell'), project)]:
             subprocess.run([str(self.installed_loki), *args], cwd=cwd, env=env,
                            capture_output=True, check=True)
@@ -222,19 +222,25 @@ assert 'LOKI_PROFILE' not in os.environ
             script += 'prompt() { local callback; for callback in "${PROMPT_COMMAND[@]}"; do eval "$callback"; done; }\n'
         script += '''native_before="$(typeset -f _direnv_hook)"
 check_project() {
+  [[ $XDG_CONFIG_HOME == /independent/config && $GOOGLE_APPLICATION_CREDENTIALS == /independent/adc.json && $GOOGLE_CLOUD_PROJECT == independent-project && $OPENAI_API_KEY == fictional-independent-key ]] || return 1
   [[ $PARENT_SETTING == parent && $PROJECT_SETTING == dotenv && $SOURCED_SETTING == sourced && $HELPER_SETTING == custom ]] || return 1
 }
 '''
         script += f'cd {shlex.quote(str(project))}\nprompt\n'
         script += '''check_project || exit 51
-[[ $LOKI_PROFILE == personal && $GH_TOKEN == loki-login-required ]] || exit 52
+[[ $LOKI_PROFILE == personal && $GH_TOKEN == wrong-inherited-token ]] || exit 52
 '''
-        script += f'[[ $PATH == {shlex.quote(str(project / "bin"))}:* ]] || exit 53\n'
+        script += f'[[ $PATH == {shlex.quote(str(store / "bin") + ":" + str(project / "bin"))}:* ]] || exit 53\n'
         script += '''loki clean || exit 54
 prompt
 check_project || exit 55
 '''
         script += f'loki use personal --no-shell || exit 56\n'
+        script += 'firebase loki-test-env XDG_CONFIG_HOME > native-env.json || exit 66\n'
+        script += shlex.quote(sys.executable) + ' -c ' + shlex.quote('import json, os; from pathlib import Path; assert json.loads(Path("native-env.json").read_text())["XDG_CONFIG_HOME"] == str(Path(os.environ["LOKI_HOME"]) / "profiles/personal/xdg")') + ' || exit 67\n'
+        script += 'loki tools remove firebase || exit 68\ncheck_project || exit 69\n'
+        script += 'firebase loki-test-env XDG_CONFIG_HOME > native-env.json || exit 70\n'
+        script += shlex.quote(sys.executable) + ' -c ' + shlex.quote('import json; from pathlib import Path; assert json.loads(Path("native-env.json").read_text())["XDG_CONFIG_HOME"] == "/independent/config"') + ' || exit 71\n'
         script += '''loki reset || exit 57
 [[ "$(typeset -f _direnv_hook)" == "$native_before" ]] || exit 58
 typeset -f _loki_refresh >/dev/null && exit 59

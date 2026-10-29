@@ -75,7 +75,7 @@ loki who --json                        # structured results for agents
 loki --profile work who                # inspect work without switching this shell
 ```
 
-`who` checks installed integrations in the persona's environment and current directory. Its table distinguishes signed-in accounts, saved credentials, missing CLIs, and failed checks. Internal dependencies such as `google` stay hidden. Checks run concurrently with a 10-second default timeout per command; use `--timeout SECONDS` to override it.
+`who` checks installed integrations with each tool's persona settings and the current directory. Its table distinguishes signed-in accounts, saved credentials, missing CLIs, and failed checks. Internal dependencies such as `google` stay hidden. Checks run concurrently with a 10-second default timeout per command; use `--timeout SECONDS` to override it.
 
 Account details depend on the tool: Firebase reports its selected project account, gcloud reports its active account, and GitHub checks the token's owner. Claude and Codex report their login state; ADC may have saved credentials without an account email. Saved login state does not guarantee that credentials are still valid. `who` does not sign in or switch accounts.
 
@@ -121,7 +121,9 @@ Reset requires two interactive confirmations. With shell integration loaded, it 
 
 ## How it works
 
-The shell hook refreshes the selected persona on startup, directory changes, and prompts. It loads project settings through direnv, then exports the enabled tools' configuration paths. Native commands inherit those paths. Switching personas restores the previous values of variables no longer managed by Loki.
+The shell hook refreshes the selected persona on startup, directory changes, and prompts. Direnv loads your project settings. Loki puts small launchers on `PATH`; when you run `firebase`, `gcloud`, `gh`, `git`, `claude`, or `codex`, the launcher applies that tool's persona settings and starts the native executable.
+
+Configuration paths and credential overrides apply to that command and its children. For example, Firebase receives its own `XDG_CONFIG_HOME`; an unrelated command in the same terminal keeps your existing XDG configuration. Python and Node SDK scripts keep their existing credentials unless you explicitly enable **`adc`**, which selects the persona's `GOOGLE_APPLICATION_CREDENTIALS` for the shell.
 
 For example, starting with a new `work` persona:
 
@@ -137,6 +139,7 @@ Loki's store defaults to `~/.config/lokishell/`; `LOKI_HOME` can override it. Af
 ```text
 ~/.config/lokishell/
   settings.json                 # global persona, folder/worktree assignments, shell setup
+  bin/gcloud                    # launcher; the installed Google CLI stays in place
   profiles/work/
     profile.json                # enabled integrations and their settings
     env.sh                      # generates this persona's environment exports
@@ -148,12 +151,14 @@ Loki's store defaults to `~/.config/lokishell/`; `LOKI_HOME` can override it. Af
 
 | Command | What changes |
 | --- | --- |
-| `loki use work` | Creates the persona, records the folder assignment, and adds a marked block to the project's `.envrc`, preserving existing content. |
-| `loki add gcloud` | Enables the integration in `profile.json` and runs Google's login with `CLOUDSDK_CONFIG` pointing to `profiles/work/gcloud/`. Login saves credentials and account settings there. |
+| `loki use work` | Creates the persona, records the folder assignment, and adds a marked block to the project's `.envrc`, preserving existing content and file permissions. |
+| `loki add gcloud` | Enables the integration in `profile.json`, creates its launcher, and runs Google's login with `CLOUDSDK_CONFIG` pointing to `profiles/work/gcloud/`. Login saves credentials and account settings there. |
 | `gcloud config set project acme-dev` | Writes the project setting into that persona's active gcloud configuration. Other folders using `work` share it. |
 | `cd ~/projects/side-project` | Refreshes the shell environment for that folder's persona; it does not copy credentials between folders. |
 
-`loki use` also installs marked startup blocks in `.zshenv`/`.zshrc` or `.bashrc`/`.bash_profile`; `--no-shell` skips this. Existing shell settings and direnv hooks remain. Other integrations use their own paths under the persona directory, such as `codex/` and `claude/`. Only enabled integrations and their dependencies contribute exports. Direnv still controls project environment approval.
+`loki use` also installs marked startup blocks in `.zshenv`/`.zshrc` or `.bashrc`/`.bash_profile`; `--no-shell` skips this. Existing settings, permissions, and direnv hooks remain. Other integrations use paths such as `codex/` and `claude/` inside the persona. Removing an integration restores native command behavior; reset removes the launchers and only Loki's marked blocks. Direnv still controls project environment approval.
+
+Use commands through the initialized shell's `PATH`. Absolute executable paths, aliases or functions that bypass the launchers, and independently launched desktop apps use their own configuration. Child processes inherit the settings of the CLI that launched them. Custom integrations can explicitly declare shell-wide variables; inspect their definitions before installing.
 
 Personas share your OS user's permissions. Credentials use native stores or private local files; LokiShell does not encrypt those files. See each [integration's documentation](tools/) for supported login modes and cleanup limits.
 

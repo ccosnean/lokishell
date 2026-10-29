@@ -23,20 +23,31 @@ class LokiTest(LokiFixture):
     def test_parallel_profiles_and_ambient_credentials(self):
         for name in ('personal', 'work'):
             (self.directory(name) / 'auth/github-token').write_text('fictional-'+name)
-        probe = '''import os,json
-from pathlib import Path
-n=os.environ['LOKI_PROFILE']; p=Path(os.environ['LOKI_HOME'])/'profiles'/n
-assert os.environ['GH_TOKEN']=='fictional-'+n
-assert os.environ['CLOUDSDK_CONFIG']==str(p/'gcloud')
-assert os.environ['GOOGLE_APPLICATION_CREDENTIALS']==str(p/'gcloud/application_default_credentials.json')
-assert os.environ['CODEX_HOME']==str(p/'codex')
-assert os.environ['CLAUDE_CONFIG_DIR']==str(p/'claude')
-for key in ['FIREBASE_TOKEN','ANTHROPIC_API_KEY','OPENAI_API_KEY','CODEX_SQLITE_HOME','CLOUDSDK_AUTH_ACCESS_TOKEN']:
- assert key not in os.environ, key
-print(n)
-'''
+        keys = ['LOKI_PROFILE', 'GH_TOKEN', 'CLOUDSDK_CONFIG', 'GOOGLE_APPLICATION_CREDENTIALS',
+                'CODEX_HOME', 'CLAUDE_CONFIG_DIR', 'XDG_CONFIG_HOME', 'FIREBASE_TOKEN',
+                'ANTHROPIC_API_KEY', 'OPENAI_API_KEY', 'CODEX_SQLITE_HOME', 'CLOUDSDK_AUTH_ACCESS_TOKEN']
         def check(name):
-            return self.run_in_persona(name, 'python3', '-c', probe).stdout.strip()
+            directory = self.directory(name)
+            for cli, expected, removed in [
+                ('gh', {'GH_TOKEN': 'fictional-' + name}, []),
+                ('firebase', {'XDG_CONFIG_HOME': str(directory / 'xdg'),
+                              'CLOUDSDK_CONFIG': str(directory / 'gcloud')}, ['FIREBASE_TOKEN', 'CLOUDSDK_AUTH_ACCESS_TOKEN']),
+                ('gcloud', {'CLOUDSDK_CONFIG': str(directory / 'gcloud')}, ['CLOUDSDK_AUTH_ACCESS_TOKEN']),
+                ('claude', {'CLAUDE_CONFIG_DIR': str(directory / 'claude')}, ['ANTHROPIC_API_KEY']),
+                ('codex', {'CODEX_HOME': str(directory / 'codex')}, ['OPENAI_API_KEY', 'CODEX_SQLITE_HOME']),
+            ]:
+                values = json.loads(self.run_in_persona(name, cli, 'loki-test-env', *keys).stdout)
+                self.assertEqual(values['LOKI_PROFILE'], name)
+                self.assertEqual(values['GOOGLE_APPLICATION_CREDENTIALS'], str(directory / 'gcloud/application_default_credentials.json'))
+                for key, value in expected.items():
+                    self.assertEqual(values[key], value, cli)
+                for key in removed:
+                    self.assertIsNone(values[key], cli)
+            probe = 'import os,json; print(json.dumps({k:os.environ.get(k) for k in ' + repr(keys) + '}))'
+            shell = json.loads(self.run_in_persona(name, 'python3', '-c', probe).stdout)
+            for key in set(keys) - {'LOKI_PROFILE', 'GOOGLE_APPLICATION_CREDENTIALS'}:
+                self.assertEqual(shell[key], self.env.get(key), key)
+            return name
         with ThreadPoolExecutor(max_workers=2) as pool:
             self.assertEqual(set(pool.map(check, ('personal', 'work'))), {'personal', 'work'})
 
@@ -109,9 +120,10 @@ print(n)
         if shutil.which('zsh'):
             dot=self.base/'worktree-zdot'; dot.mkdir()
             (dot/'.zshenv').write_text(self.run_loki('hook','zsh').stdout)
-            fresh=subprocess.run(['zsh','-c','echo "$LOKI_PROFILE"; echo "$CLOUDSDK_CONFIG"'],cwd=tree,
+            fresh=subprocess.run(['zsh','-c','echo "$LOKI_PROFILE"; gcloud loki-test-env CLOUDSDK_CONFIG'],cwd=tree,
                                  env=dict(self.env,ZDOTDIR=str(dot)),check=True,text=True,capture_output=True)
-            self.assertEqual(fresh.stdout.splitlines(),['work',str(self.directory('work')/'gcloud')])
+            self.assertEqual(fresh.stdout.splitlines()[0], 'work')
+            self.assertEqual(json.loads(fresh.stdout.splitlines()[1])['CLOUDSDK_CONFIG'], str(self.directory('work')/'gcloud'))
         self.run_loki('use','personal','--no-shell',cwd=tree)
         self.assertEqual(json.loads(self.run_loki('status',cwd=repo).stdout)['profile'],'work')
         self.assertEqual(json.loads(self.run_loki('status',cwd=tree).stdout)['profile'],'personal')
@@ -163,8 +175,8 @@ print(n)
         self.assertEqual((work/'gcloud/credentials.db').read_text(), 'fictional-work')
         self.assertEqual((personal/'codex/history.jsonl').read_text(), 'keep history')
         self.assertTrue((self.projects['personal']/'.envrc').exists())
-        result=self.run_in_persona('personal','python3','-c','import os; print(os.environ["GH_TOKEN"])')
-        self.assertEqual(result.stdout.strip(),'loki-login-required')
+        result=self.run_in_persona('personal','gh','loki-test-env','GH_TOKEN')
+        self.assertEqual(json.loads(result.stdout)['GH_TOKEN'],'loki-login-required')
         calls=(self.base/'calls.jsonl').read_text()
         self.assertIn('"logout", "tickets"',calls)
 

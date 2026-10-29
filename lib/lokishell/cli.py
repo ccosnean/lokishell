@@ -8,7 +8,6 @@ import os
 from pathlib import Path
 import re
 import shlex
-import shutil
 import subprocess
 import sys
 import tempfile
@@ -16,8 +15,9 @@ import time
 import uuid
 
 from .registry import Registry, Context, ENV_NAME
+from . import setup_files
 
-VERSION = '0.6.0'
+VERSION = '0.7.0'
 BEGIN, END = '# BEGIN lokishell', '# END lokishell'
 NAME = re.compile(r'^[a-zA-Z0-9][a-zA-Z0-9_-]{0,63}$')
 
@@ -30,14 +30,14 @@ def executable():
     return str(Path(sys.argv[0]).absolute())
 
 
-def write(path, text):
+def write(path, text, mode=0o600):
     check_storage_path(path)
     # Readers in other shells must see either complete version, never partial JSON.
     with tempfile.NamedTemporaryFile(mode='w', dir=path.parent, delete=False) as output:
         temporary = Path(output.name)
         output.write(text)
     try:
-        temporary.chmod(0o600)
+        temporary.chmod(mode)
         temporary.replace(path)
     finally:
         temporary.unlink(missing_ok=True)
@@ -95,10 +95,12 @@ def edit_settings():
 
 
 def git_context():
-    if not shutil.which('git'):
+    from .dispatch import native_command
+    git = native_command(core_api(), 'git', os.environ)
+    if not git:
         return None
     env = {k: v for k, v in os.environ.items() if k not in ('GIT_DIR', 'GIT_WORK_TREE', 'GIT_COMMON_DIR')}
-    result = subprocess.run(['git', 'rev-parse', '--path-format=absolute', '--git-common-dir', '--show-toplevel'],
+    result = subprocess.run([git, 'rev-parse', '--path-format=absolute', '--git-common-dir', '--show-toplevel'],
                             env=env, capture_output=True, text=True)
     lines = result.stdout.splitlines()
     if result.returncode == 0 and len(lines) == 2:
@@ -118,9 +120,9 @@ def effective():
             return persona, 'folder', directory
         path = directory / '.envrc'
         if path.is_file():
-            found = block(path.read_text())
+            found = block(setup_files.read(path))
             if found:
-                match = re.search(r'^# profile: (.+)$', found.group(), re.M)
+                match = re.search(r'^# profile: ([^\r\n]+)\r?$', found.group(), re.M)
                 if match:
                     return match.group(1), 'folder', directory
         if context and directory == context[1] and str(context[0]) in value['repositories']:
@@ -182,8 +184,8 @@ def create_profile(name):
     return directory
 
 
-def previous_environment():
-    encoded = os.environ.get('LOKI_ENV_STATE')
+def previous_environment(variable='LOKI_ENV_STATE'):
+    encoded = os.environ.get(variable)
     if not encoded:
         return {}
     try:
@@ -198,8 +200,16 @@ def previous_environment():
 
 def baseline_environment():
     baseline = dict(os.environ)
+    if path := os.environ.get('LOKI_SHIM_PATH'):
+        baseline['PATH'] = os.pathsep.join(part for part in baseline.get('PATH', '').split(os.pathsep) if part != path)
     baseline.pop('LOKI_ENV_STATE', None)
+    baseline.pop('LOKI_ENV_APPLIED', None)
+    applied = previous_environment('LOKI_ENV_APPLIED')
     for key, value in previous_environment().items():
+        # direnv or the user may have supplied a new value since our last
+        # refresh. Restore only the values that are still ours to restore.
+        if key in applied and baseline.get(key) != applied[key]:
+            continue
         if value is None:
             baseline.pop(key, None)
         else:
@@ -211,19 +221,35 @@ def environment(name, tools=None):
     baseline = baseline_environment()
     if name is None:
         return baseline
-    remove, values = registry().compose(core_api(), name, baseline, names=tools)
+    catalog = registry()
+    remove, values = catalog.compose(core_api(), name, baseline, shell=True)
+    if tools is not None:
+        scoped_remove, scoped_values = catalog.compose(core_api(), name, baseline, names=tools)
+        remove |= scoped_remove
+        values.update(scoped_values)
     values.update({'LOKI_HOME': str(root()), 'LOKI_PROFILE': name,
                    'DIRENV_CONFIG': baseline.get('DIRENV_CONFIG', str(Path.home() / '.config/direnv'))})
     owned = remove | set(values)
     snapshot = {key: baseline.get(key) for key in owned}
     result = {**{key: value for key, value in baseline.items() if key not in remove}, **values}
+    directory = root() / 'bin'
+    check_storage_path(directory)
+    if directory.is_dir():
+        from .dispatch import without_launchers
+        result['PATH'] = str(directory) + os.pathsep + without_launchers(core_api(), baseline.get('PATH', os.defpath), os.environ)
+        result['LOKI_SHIM_PATH'] = str(directory)
+        snapshot['LOKI_SHIM_PATH'] = None
     result['LOKI_ENV_STATE'] = base64.urlsafe_b64encode(json.dumps(snapshot).encode()).decode()
+    applied = {key: result.get(key) for key in snapshot}
+    result['LOKI_ENV_APPLIED'] = base64.urlsafe_b64encode(json.dumps(applied).encode()).decode()
     return result
 
 
 def changes(name):
     result = environment(name)
-    keys = set(previous_environment()) | {'LOKI_ENV_STATE'}
+    keys = set(previous_environment()) | {'LOKI_ENV_STATE', 'LOKI_ENV_APPLIED'}
+    if os.environ.get('LOKI_SHIM_PATH') or result.get('LOKI_SHIM_PATH'):
+        keys.add('PATH')
     if name is not None:
         # Snapshot keys describe exactly what this persona owns; unsupported tools are untouched.
         keys.update(json.loads(base64.urlsafe_b64decode(result['LOKI_ENV_STATE']).decode()))
@@ -269,7 +295,7 @@ def add(name, services, options=None):
 
 
 def block(text):
-    match = re.search(r'(?m)^# BEGIN lokishell\n.*?^# END lokishell(?:\n|$)', text, re.S)
+    match = re.search(r'(?m)^# BEGIN lokishell\r?\n.*?^# END lokishell(?:\r?\n|$)', text, re.S)
     if (BEGIN in text or END in text) and not match:
         raise ValueError('The LokiShell block is incomplete; leaving the file unchanged.')
     return match
@@ -294,7 +320,8 @@ def bind_folder(name, no_shell=False):
     path = Path.cwd() / '.envrc'
     if path.is_symlink():
         raise ValueError('Refusing to replace a symlinked .envrc.')
-    previous = path.read_text() if path.exists() else ''
+    existed = path.exists()
+    previous = setup_files.read(path) if existed else ''
     match = block(previous)
     content = (f'{BEGIN}\n# profile: {name}\nexport LOKI_HOME={shlex.quote(str(root()))}\n'
                f'source_env {shlex.quote(str(directory / "env.sh"))}\n{END}\n')
@@ -302,9 +329,11 @@ def bind_folder(name, no_shell=False):
         updated = previous[:match.start()] + content + previous[match.end():]
     else:
         updated = previous + ('\n' if previous and not previous.endswith('\n') else '') + content
-    write(path, updated)
+    setup_files.write(core_api(), path, updated, previous)
     context = git_context()
     with edit_settings() as value:
+        if not existed:
+            value['created_setup_files'] = list(dict.fromkeys([*value.get('created_setup_files', []), str(path)]))
         value['folders'][str(Path.cwd().resolve())] = name
         if context and context[1] == Path.cwd().resolve():
             common, top = context
@@ -345,15 +374,20 @@ def install_shell():
     line = f'eval "$({shlex.quote(executable())} hook {shell})"\n'
     content = f'{BEGIN}\n{line}{END}\n'
     for path in files:
-        previous = path.read_text() if path.exists() else ''
+        existed = path.exists()
+        previous = setup_files.read(path) if existed else ''
         found = block(previous)
-        updated = previous[:found.start()] + content + previous[found.end():] if found else previous + '\n' + content
+        updated = (previous[:found.start()] + content + previous[found.end():] if found else
+                   previous + ('\n' if previous and not previous.endswith('\n') else '') + content)
         if updated != previous:
             if previous:
                 backup = root() / 'backups'
                 mkdir(backup)
                 write(backup / f'{path.name}-{time.time_ns()}', previous)
-            write(path, updated)
+            setup_files.write(core_api(), path, updated, previous)
+            if not existed:
+                with edit_settings() as value:
+                    value['created_setup_files'] = list(dict.fromkeys([*value.get('created_setup_files', []), str(path)]))
     with edit_settings() as value:
         value['shell_files'] = list(dict.fromkeys([*value.get('shell_files', []), *(str(path) for path in files)]))
     print(f'Shell integration installed for {shell}. Open a fresh terminal once if this shell has not loaded it.')
@@ -371,18 +405,19 @@ def clean(name, globally=False):
         active, source, origin = effective()
         if active != name or origin != Path.cwd().resolve():
             raise ValueError('Run clean from the linked folder or worktree root. Nothing changed.')
-        text = path.read_text() if path.exists() else ''
+        text = setup_files.read(path) if path.exists() else ''
         found = block(text)
-        if found and f'# profile: {name}\n' not in found.group():
+        if found and not re.search(rf'(?m)^# profile: {re.escape(name)}\r?$', found.group()):
             raise ValueError('This folder has no matching LokiShell pointer. Nothing changed.')
         if found:
             remaining = text[:found.start()] + text[found.end():]
-            if remaining.strip():
-                write(path, remaining)
+            if remaining or str(path) not in settings().get('created_setup_files', []):
+                setup_files.write(core_api(), path, remaining, text)
                 subprocess.run(['direnv', 'allow', str(Path.cwd())], check=True)
             else:
-                path.unlink()
+                setup_files.remove(core_api(), path, text)
         with edit_settings() as value:
+            value['created_setup_files'] = [item for item in value.get('created_setup_files', []) if item != str(path)]
             # This opt-out keeps repository inheritance active for the other worktrees.
             value['folders'][str(Path.cwd().resolve())] = None
         print(f'Unlinked this folder. Shared {name} logins and other folders are unchanged.')

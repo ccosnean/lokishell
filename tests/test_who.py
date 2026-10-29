@@ -63,12 +63,18 @@ class WhoTests(LokiFixture):
 from pathlib import Path
 p = Path(os.environ['LOKI_HOME']) / 'profiles' / 'personal'
 assert os.environ['LOKI_PROFILE'] == 'personal'
-assert os.environ['CLOUDSDK_CONFIG'] == str(p / 'gcloud')
-assert os.environ['GH_TOKEN'] == 'fictional-personal-token'
-assert os.environ['CLAUDE_CONFIG_DIR'] == str(p / 'claude')
-assert os.environ['CODEX_HOME'] == str(p / 'codex')
-assert os.environ['XDG_CONFIG_HOME'] == str(p / 'xdg')
-assert 'FIREBASE_TOKEN' not in os.environ
+assert os.environ['GOOGLE_APPLICATION_CREDENTIALS'] == str(p / 'gcloud/application_default_credentials.json')
+name = Path(sys.argv[0]).name
+owned = {'firebase': 'XDG_CONFIG_HOME', 'gcloud': 'CLOUDSDK_CONFIG', 'gh': 'GH_TOKEN',
+         'claude': 'CLAUDE_CONFIG_DIR', 'codex': 'CODEX_HOME'}
+expected = {'XDG_CONFIG_HOME': str(p / 'xdg'), 'CLOUDSDK_CONFIG': str(p / 'gcloud'),
+            'GH_TOKEN': 'fictional-personal-token', 'CLAUDE_CONFIG_DIR': str(p / 'claude'),
+            'CODEX_HOME': str(p / 'codex')}
+assert os.environ[owned[name]] == expected[owned[name]]
+if name == 'firebase':
+ assert 'FIREBASE_TOKEN' not in os.environ
+else:
+ assert os.environ['FIREBASE_TOKEN'] == 'wrong-inherited-token'
 '''
         self.stub('firebase', common + r'''assert sys.argv[1:] == ['login:list', '--non-interactive']
 print('Logged in as selected@example.invalid\n\nOther available accounts\n - global@example.invalid')

@@ -9,6 +9,7 @@ command = "codex"
 install_hint = "Install Codex CLI: https://developers.openai.com/codex/cli"
 
 [env]
+scope = "process"
 unset = ["CODEX_API_KEY", "CODEX_SQLITE_HOME"]
 unset_prefixes = ["OPENAI_"]
 

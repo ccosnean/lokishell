@@ -1,7 +1,9 @@
 """Optional verification against an actual installed Firebase CLI library."""
 import json
 import os
-from tests.support import LokiFixture
+import subprocess
+from unittest.mock import patch
+from tests.support import LokiFixture, module
 
 
 class FirebaseTests(LokiFixture):
@@ -13,5 +15,7 @@ class FirebaseTests(LokiFixture):
             self.skipTest('Optional installed Firebase library check')
         for name in ('personal','work'):
             expression='process.stdout.write(require('+json.dumps(module_path)+').configstore.path)'
-            result=self.run_in_persona(name,'node','-e',expression)
+            with patch.dict(os.environ, self.env, clear=True):
+                env = module.environment(name, tools=['firebase'])
+            result=subprocess.run(['node','-e',expression],env=env,check=True,text=True,capture_output=True)
             self.assertEqual(result.stdout,str(self.directory(name)/'xdg/configstore/firebase-tools.json'))

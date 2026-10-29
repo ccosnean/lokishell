@@ -16,6 +16,8 @@ CATALOG = Path(__file__).resolve().parents[2] / 'tools'
 IDENTIFIER = re.compile(r'^[a-z][a-z0-9_-]*$')
 ENV_NAME = re.compile(r'^[A-Za-z_][A-Za-z0-9_]*$')
 RESERVED = {'HOME', 'home', 'PATH', 'SHELL', 'BASH_ENV', 'ENV', 'ZDOTDIR'}
+SHARED_CONFIG = {'XDG_CONFIG_HOME', 'XDG_DATA_HOME', 'XDG_CACHE_HOME', 'XDG_STATE_HOME', 'XDG_RUNTIME_DIR'}
+COMMAND = re.compile(r'^[a-zA-Z0-9][a-zA-Z0-9._+-]*$')
 SECTIONS = {'schema_version', 'id', 'name', 'description', 'depends_on', 'internal', 'legacy_default',
             'cli', 'env', 'state', 'login', 'cleanup', 'hooks', 'mcp', 'who'}
 
@@ -29,11 +31,13 @@ def relative_path(value):
     return value
 
 
-def env_name(value):
+def env_name(value, scope='shell'):
     if not isinstance(value, str) or not ENV_NAME.fullmatch(value):
         raise ValueError(f'Invalid environment name: {value!r}')
     if value in RESERVED or value.startswith(('LOKI_', 'DIRENV_')):
         raise ValueError(f'Tools cannot own shell/core variable {value}')
+    if scope == 'shell' and (value in SHARED_CONFIG or value == 'XDG_'):
+        raise ValueError(f'Shared variable {value} requires env.scope = "process"')
     return value
 
 
@@ -69,24 +73,32 @@ class Tool:
                 raise ValueError(f'{key} is required')
         string_list(d.get('depends_on', []), 'depends_on')
         cli = d.get('cli', {})
-        allowed_keys(cli, {'command', 'install_hint', 'optional'}, 'cli')
+        allowed_keys(cli, {'command', 'commands', 'install_hint', 'optional'}, 'cli')
         if cli and not isinstance(cli.get('command'), str):
             raise ValueError('cli.command must name the native executable')
+        for command in [*string_list(cli.get('commands', []), 'cli.commands'), *([cli['command']] if cli else [])]:
+            if not COMMAND.fullmatch(command) or command in ('loki', 'direnv'):
+                raise ValueError('CLI commands must be executable names, excluding loki and direnv')
         env = d.get('env', {})
-        allowed_keys(env, {'unset', 'unset_prefixes', 'set', 'from_file', 'from_config'}, 'env')
+        allowed_keys(env, {'scope', 'unset', 'unset_prefixes', 'set', 'from_file', 'from_config'}, 'env')
+        scope = env.get('scope', 'shell')
+        if scope not in ('shell', 'process'):
+            raise ValueError('env.scope must be shell or process')
+        if scope == 'process' and not cli and not d.get('internal', False):
+            raise ValueError('Process-scoped integrations need cli.command')
         for key in ('set', 'from_file', 'from_config'):
             if not isinstance(env.get(key, {}), dict):
                 raise ValueError(f'env.{key} must be a table')
         for key in ('unset', 'unset_prefixes'):
             for name in string_list(env.get(key, []), f'env.{key}'):
-                env_name(name)
+                env_name(name, scope)
         for name, value in env.get('set', {}).items():
-            env_name(name)
+            env_name(name, scope)
             if not isinstance(value, str):
                 raise ValueError(f'env.set.{name} must be a string')
         for kind in ('from_file', 'from_config'):
             for name, value in env.get(kind, {}).items():
-                env_name(name)
+                env_name(name, scope)
                 source = 'path' if kind == 'from_file' else 'key'
                 allowed_keys(value, {source, 'default'}, f'env.{kind}.{name}')
                 if not isinstance(value.get(source), str) or not isinstance(value.get('default', ''), str):
@@ -112,7 +124,7 @@ class Tool:
                 if key in value and not string_list(value[key], f'{section}.{key}'):
                     raise ValueError(f'{section}.{key} cannot be empty')
         for name in d.get('login', {}).get('unset_env', []):
-            env_name(name)
+            env_name(name, 'process')
         cleanup = d.get('cleanup', {})
         for key in ('files', 'directories'):
             for path in string_list(cleanup.get(key, []), f'cleanup.{key}'):
@@ -202,13 +214,16 @@ class Context:
         return ''.join(result)
 
     def run(self, command, unset=(), extra=None):
+        from .dispatch import native_command
         env = self.core.environment(self.persona, tools=[self.tool.id])
         for name in unset:
             env.pop(name, None)
         argv = [self.render(part, extra) for part in command]
-        if not shutil.which(argv[0], path=env.get('PATH')):
+        native = native_command(self.core, argv[0], env)
+        if not native:
             hint = self.tool.data.get('cli', {}).get('install_hint', 'Install the native CLI first.')
             raise ValueError(f'{self.tool.id}: {argv[0]} is not installed. {hint}')
+        argv[0] = native
         subprocess.run(argv, env=env, check=True)
 
 
@@ -295,8 +310,22 @@ class Registry:
                 if not path.exists():
                     core.write(path, context.render(file['content']))
             tool.call('prepare', context)
+        from .dispatch import prepare
+        prepare(core, self, names)
 
-    def compose(self, core, persona, baseline, names=None):
+    def commands(self, names):
+        commands = {}
+        for name in self.resolve(names):
+            tool = self.get(name)
+            cli = tool.data.get('cli', {})
+            if not cli or not any(self.get(part).data.get('env', {}).get('scope') == 'process'
+                                  for part in self.resolve([name])):
+                continue
+            for command in [cli['command'], *cli.get('commands', [])]:
+                commands.setdefault(command, []).append(name)
+        return commands
+
+    def compose(self, core, persona, baseline, names=None, shell=False):
         remove, values, owners = set(), {}, {}
         config = core.read_config(persona)
         names = self.enabled(config) if names is None else self.resolve(names)
@@ -304,11 +333,13 @@ class Registry:
             tool = self.get(name)
             context = Context(core, tool, persona)
             env = tool.data.get('env', {})
+            if shell and env.get('scope') == 'process':
+                continue
             remove.update(env.get('unset', []))
             for prefix in env.get('unset_prefixes', []):
                 for key in baseline:
                     if key.startswith(prefix):
-                        env_name(key)  # A broad prefix must not capture shell/core variables.
+                        env_name(key, env.get('scope', 'shell'))
                         remove.add(key)
             produced = {key: context.render(value) for key, value in env.get('set', {}).items()}
             for key, source in env.get('from_file', {}).items():
@@ -325,14 +356,20 @@ class Registry:
     def install(self, core, persona, names):
         self.resolve(names)
         roots = list(dict.fromkeys([*self.roots(core.read_config(persona)), *names]))
-        self.compose(core, persona, core.baseline_environment(), roots)
+        self.validate_environments(core, persona, roots)
         self.prepare(core, persona, roots)
         # Merge again under the lock: another agent may have installed a different integration.
         with core.edit_profile(persona) as config:
             roots = list(dict.fromkeys([*self.roots(config), *names]))
-            self.compose(core, persona, core.baseline_environment(), roots)
+            self.validate_environments(core, persona, roots)
             config['tools'] = roots
             config['managed_tools'] = list(dict.fromkeys([*config.get('managed_tools', []), *self.resolve(roots)]))
+
+    def validate_environments(self, core, persona, roots):
+        baseline = core.baseline_environment()
+        self.compose(core, persona, baseline, roots, shell=True)
+        for names in self.commands(roots).values():
+            self.compose(core, persona, baseline, names)
 
     def remove(self, core, persona, names):
         for name in names:

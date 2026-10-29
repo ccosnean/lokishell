@@ -3,7 +3,6 @@ import json
 import os
 from pathlib import Path
 import shlex
-import shutil
 import subprocess
 
 import click
@@ -99,6 +98,7 @@ def tools_catalog(all_tools, as_json):
 
 
 def list_tools(scope, all_tools, as_json):
+    from .dispatch import native_command
     catalog = core.registry()
     persona = selected_profile() or core.effective()[0]
     config = core.read_config(persona) if persona else {'tools': []}
@@ -110,7 +110,7 @@ def list_tools(scope, all_tools, as_json):
         if tool.data.get('internal', False) and not all_tools:
             continue
         command = tool.data.get('cli', {}).get('command')
-        cli_path = shutil.which(command) if command else None
+        cli_path = native_command(core, command, os.environ) if command else None
         rows.append({'id': tool.id, 'name': tool.data['name'], 'enabled': tool.id in enabled,
                      'selected': tool.id in selected, 'origin': tool.origin,
                      'definition': str(tool.path), 'cli': command, 'cli_path': cli_path,
@@ -210,7 +210,8 @@ def tools_install(tools, source, replace):
     click.echo(f'Enabled for {persona}: '+', '.join(names))
     for name in names:
         native = catalog.get(name).data.get('cli', {})
-        if native.get('command') and not shutil.which(native['command']):
+        from .dispatch import native_command
+        if native.get('command') and not native_command(core, native['command'], os.environ):
             click.echo(f'{name}: native CLI missing. '+native.get('install_hint', 'Install it separately.'))
 
 
@@ -312,11 +313,23 @@ def hook_command(shell):
 
 
 def emit_environment(name):
+    if name:
+        from .dispatch import prepare
+        catalog = core.registry()
+        prepare(core, catalog, catalog.roots(core.read_config(name)))
     remove, values = core.changes(name)
     for key in sorted(remove):
         click.echo('unset '+key)
     for key, value in values.items():
         click.echo('export '+key+'='+shlex.quote(value))
+
+
+@main.command('_run-command', hidden=True, context_settings={'ignore_unknown_options': True, 'allow_interspersed_args': False})
+@click.argument('command')
+@click.argument('args', nargs=-1, type=click.UNPROCESSED)
+def run_command(command, args):
+    from .dispatch import run
+    run(core, command, args)
 
 
 @main.command('_env', hidden=True)

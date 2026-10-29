@@ -10,6 +10,7 @@ command = "firebase"
 install_hint = "npm install -g firebase-tools"
 
 [env]
+scope = "process"
 unset = ["FIREBASE_TOKEN", "FIREBASE_CONFIG"]
 
 [env.set]

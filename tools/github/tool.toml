@@ -6,10 +6,12 @@ legacy_default = true
 
 [cli]
 command = "gh"
+commands = ["git"]
 install_hint = "brew install gh (optional for importing an existing named login)"
 optional = true
 
 [env]
+scope = "process"
 unset = ["GH_TOKEN", "GITHUB_TOKEN", "GH_ENTERPRISE_TOKEN", "GITHUB_ENTERPRISE_TOKEN", "GH_HOST", "GH_REPO", "GIT_AUTHOR_NAME", "GIT_AUTHOR_EMAIL", "GIT_COMMITTER_NAME", "GIT_COMMITTER_EMAIL"]
 unset_prefixes = ["GIT_CONFIG"]
 

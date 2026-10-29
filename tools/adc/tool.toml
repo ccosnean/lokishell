@@ -5,6 +5,10 @@ description = "Application Default Credentials for local SDKs"
 depends_on = ["google"]
 legacy_default = true
 
+# Selecting ADC explicitly opts SDKs into this persona's application credentials.
+[env.set]
+GOOGLE_APPLICATION_CREDENTIALS = "{profile}/gcloud/application_default_credentials.json"
+
 [cli]
 command = "gcloud"
 install_hint = "Install the Google Cloud CLI: https://cloud.google.com/sdk/docs/install"

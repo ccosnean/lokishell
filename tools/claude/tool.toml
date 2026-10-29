@@ -9,6 +9,7 @@ command = "claude"
 install_hint = "Install Claude Code: https://code.claude.com/docs/en/setup"
 
 [env]
+scope = "process"
 unset = ["CLAUDE_SECURESTORAGE_CONFIG_DIR", "CLAUDE_CODE_OAUTH_TOKEN", "CLAUDE_CODE_OAUTH_TOKEN_FILE_DESCRIPTOR", "CLAUDE_CODE_USE_BEDROCK", "CLAUDE_CODE_USE_VERTEX", "CLAUDE_CODE_USE_FOUNDRY"]
 unset_prefixes = ["ANTHROPIC_"]
 

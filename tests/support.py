@@ -22,13 +22,18 @@ class LokiFixture(unittest.TestCase):
         self.fake = self.base / 'fake-bin'
         self.fake.mkdir()
         self.env = dict(os.environ, LOKI_HOME=str(self.store), DIRENV_CONFIG=str(self.base / 'direnv'),
+                        XDG_CONFIG_HOME=str(self.base / 'outside-xdg'),
+                        CLOUDSDK_CONFIG=str(self.base / 'outside-google'),
+                        GH_CONFIG_DIR=str(self.base / 'outside-gh'),
+                        CLAUDE_CONFIG_DIR=str(self.base / 'outside-claude'),
+                        CODEX_HOME=str(self.base / 'outside-codex'),
                         XDG_DATA_HOME=str(self.base / 'data'), XDG_CACHE_HOME=str(self.base / 'cache'),
                         PATH=str(self.fake)+os.pathsep+os.environ['PATH'], GH_TOKEN='wrong-inherited-token',
                         FIREBASE_TOKEN='wrong-inherited-token', ANTHROPIC_API_KEY='wrong-inherited-key',
                         OPENAI_API_KEY='wrong-inherited-key', CODEX_SQLITE_HOME='/wrong/sqlite',
                         CLOUDSDK_AUTH_ACCESS_TOKEN='wrong-inherited-token',
                         GOOGLE_APPLICATION_CREDENTIALS='/wrong/adc', FAKE_LOG=str(self.base / 'calls.jsonl'))
-        for key in ('ZDOTDIR', 'BASH_ENV', 'ENV', 'LOKI_ENV_STATE', 'LOKI_PROFILE'):
+        for key in ('ZDOTDIR', 'BASH_ENV', 'ENV', 'LOKI_ENV_STATE', 'LOKI_PROFILE', 'LOKI_SHIM_PATH', 'LOKI_ENV_APPLIED'):
             self.env.pop(key, None)
         for name in ('firebase', 'gcloud', 'claude', 'codex', 'gh'):
             script = self.fake / name
@@ -36,6 +41,9 @@ class LokiFixture(unittest.TestCase):
 import json, os, sys
 from pathlib import Path
 name=Path(sys.argv[0]).name
+if sys.argv[1:2]==['loki-test-env']:
+ print(json.dumps({key:os.environ.get(key) for key in sys.argv[2:]}))
+ sys.exit(0)
 if name=='gh':
  assert sys.argv[1:5]==['auth','token','--hostname','github.com'], sys.argv
  print('fictional-github-token')

@@ -16,6 +16,15 @@ def sys_module():
 class GitHubTests(LokiFixture):
     initial_tools = ('github',)
 
+    def test_missing_native_gh_uses_manual_login_path_even_with_a_launcher(self):
+        (self.fake / 'gh').unlink()
+        with patch.dict(os.environ, dict(self.env, PATH=str(self.fake)), clear=True):
+            env = module.environment('personal')
+        with patch.dict(os.environ, env, clear=True), patch.object(sys.stdin, 'isatty', return_value=False):
+            tool = module.registry().get('github')
+            with self.assertRaisesRegex(ValueError, 'No saved gh login'):
+                tool.call('login', Context(module, tool, 'personal', {'user': 'example-personal'}))
+
     def test_github_import_checks_identity_without_login_or_switch(self):
         config=self.directory('personal')/'profile.json'
         old=json.loads(config.read_text())

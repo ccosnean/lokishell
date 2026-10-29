@@ -63,12 +63,13 @@ def login(ctx):
     if not re.fullmatch(r'[a-zA-Z0-9][a-zA-Z0-9-]*', username):
         raise ValueError('Invalid GitHub username.')
     token = ''
-    if shutil.which('gh'):
-        base = ctx.core.baseline_environment()
+    base = ctx.core.baseline_environment()
+    gh = shutil.which('gh', path=base.get('PATH', os.defpath))
+    if gh:
         base['GH_CONFIG_DIR'] = os.environ.get('LOKI_GH_IMPORT_DIR', str(Path.home() / '.config/gh'))
         for key in ('GH_TOKEN', 'GITHUB_TOKEN', 'GH_ENTERPRISE_TOKEN', 'GITHUB_ENTERPRISE_TOKEN'):
             base.pop(key, None)
-        result = subprocess.run(['gh', 'auth', 'token', '--hostname', 'github.com', '--user', username],
+        result = subprocess.run([gh, 'auth', 'token', '--hostname', 'github.com', '--user', username],
                                 env=base, capture_output=True, text=True)
         if result.returncode == 0:
             token = result.stdout.strip()

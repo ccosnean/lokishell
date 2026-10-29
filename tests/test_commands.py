@@ -170,7 +170,7 @@ class CommandTests(LokiFixture):
         self.assertEqual(result.exit_code, 0, result.output)
         self.assertFalse(self.store.exists())
         self.assertEqual(pointer.read_text(), original)
-        self.assertEqual((fake_home / '.zshrc').read_text(), original + '\n')
+        self.assertEqual((fake_home / '.zshrc').read_text(), original)
         self.assertFalse((fake_home / '.zshenv').exists())
         self.assertFalse((self.projects['work'] / '.envrc').exists())
         self.assertEqual(project_file.read_text(), 'keep')

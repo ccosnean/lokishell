@@ -5,6 +5,7 @@ description = "Shared Google SDK credential paths used by Firebase, gcloud, and 
 internal = true
 
 [env]
+scope = "process"
 unset = ["GOOGLE_APPLICATION_CREDENTIALS", "GOOGLE_CLOUD_PROJECT", "GCLOUD_PROJECT", "GCP_PROJECT", "GOOGLE_CLOUD_QUOTA_PROJECT", "GOOGLE_IMPERSONATE_SERVICE_ACCOUNT"]
 unset_prefixes = ["CLOUDSDK_"]
 

@@ -7,6 +7,8 @@ import sys
 
 import click
 
+from . import setup_files
+
 
 def interactive_input():
     return sys.stdin.isatty()
@@ -22,7 +24,7 @@ def reset_plan(core):
         raise ValueError(f'Refusing to erase an unsafe LOKI_HOME: {storage}')
     # Never recursively remove an arbitrary directory supplied through LOKI_HOME.
     if storage.exists():
-        known = {'settings.json', '.settings.lock', 'profiles', 'tools', 'backups'}
+        known = {'settings.json', '.settings.lock', 'profiles', 'tools', 'backups', 'bin'}
         unknown = {path.name for path in storage.iterdir()} - known
         if unknown:
             raise ValueError('Unexpected files in LOKI_HOME; nothing changed: '+', '.join(sorted(unknown)))
@@ -48,10 +50,10 @@ def reset_plan(core):
             continue
         if path.is_symlink():
             # A symlink to an unrelated shell file is not ours to edit.
-            if path.is_file() and core.BEGIN not in path.read_text():
+            if path.is_file() and core.BEGIN not in setup_files.read(path):
                 continue
             raise ValueError(f'Refusing to change a linked setup file: {path}')
-        previous = path.read_text()
+        previous = setup_files.read(path)
         remaining = previous
         while found := core.block(remaining):
             remaining = remaining[:found.start()] + remaining[found.end():]
@@ -109,11 +111,11 @@ def reset(core):
                       and 'no such file or directory' in result.stderr)
             if result.returncode and not absent:
                 raise click.ClickException(f'Could not remove direnv approval for {path}: {result.stderr.strip()}')
-    for path, _, remaining in edits:
-        if remaining.strip():
-            core.write(path, remaining)
+    for path, previous, remaining in edits:
+        if remaining or str(path) not in core.settings().get('created_setup_files', []):
+            setup_files.write(core, path, remaining, previous)
         else:
-            path.unlink()
+            setup_files.remove(core, path, previous)
     if storage.exists():
         shutil.rmtree(storage)
     click.echo('LokiShell reset. All managed personas and data were removed.')

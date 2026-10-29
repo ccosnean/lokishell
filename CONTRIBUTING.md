@@ -27,6 +27,7 @@ command = "acme"
 install_hint = "Install the Acme CLI using its official instructions"
 
 [env]
+scope = "process"
 unset = ["ACME_TOKEN"]
 unset_prefixes = ["ACME_AUTH_"]
 
@@ -66,7 +67,9 @@ Persistent settings live under `tool_config.acme` in the persona's `profile.json
 | `internal` | Hide a shared dependency from the default catalog listing |
 | `legacy_default` | Migration flag for pre-registry integrations; leave unset for new contributions |
 | `cli.command`, `cli.install_hint` | Executable detection and installation instructions |
+| `cli.commands` | Additional executable names using the same settings, such as `["git"]` alongside `gh` |
 | `cli.optional` | Documents an executable that is optional, such as GitHub CLI for token import |
+| `env.scope` | `process` applies variables through CLI launchers; `shell` exports them to all commands (the compatibility default) |
 | `env.unset` | Exact inherited environment variables to clear |
 | `env.unset_prefixes` | Tool-owned variable prefixes to clear |
 | `env.set` | Environment names mapped to string values/templates |
@@ -89,9 +92,11 @@ Templates support `{profile}`, `{persona}`, `{id}`, `{home}`, `{loki}`, `{loki_q
 
 Commands are argument arrays, not shell strings. Loki does not evaluate shell substitutions in environment values. Explicit Python hooks and explicit shell commands in a definition are executable code, so review them before installing third-party definitions.
 
-Tools cannot own Loki/direnv bookkeeping variables or change shell startup variables such as `HOME`, `PATH`, or `BASH_ENV`. Conflicting values for the same environment variable are rejected. Shared ownership should be factored into a dependency; see `tools/google/` and the Firebase/gcloud/ADC integrations.
+Use `scope = "process"` for CLI integrations. Declare bare executable names in `cli.command` and optional `cli.commands`; Loki starts the native binary with only that integration's settings and dependencies. Login, logout, and account checks receive the same settings. Children inherit the managed command's environment. Reserve `shell` for deliberate SDK-wide settings, such as ADC.
 
-Only enabled integrations and their dependencies contribute variables. When selection changes, Loki restores the previous values for variables it no longer owns. Its private process-environment snapshot can contain inherited credentials, just as an environment diff can; never print the full environment in tests or logs.
+Tools cannot own Loki/direnv bookkeeping variables or change shell startup variables such as `HOME`, `PATH`, or `BASH_ENV`. Shared XDG directory variables require process scope. Conflicting values in one command's environment are rejected; separate commands may use different values. Shared ownership can be factored into a dependency; see `tools/google/`.
+
+Only enabled integrations and their dependencies contribute variables. Shell-scoped settings restore their prior values when no longer selected; newer values supplied by direnv or the user are preserved. Loki removes only its own launcher directory from `PATH`. Its process-environment snapshots can contain credentials; never print them or a real process's full environment in tests or logs.
 
 ## Account checks for `loki who`
 
@@ -104,7 +109,7 @@ signed_out_exit_codes = [1]
 timeout = 10
 ```
 
-A successful command with empty stdout means signed out. Nonempty stdout must contain only one username or email, never a token. Commands run with the inspected persona's full environment, the caller's working directory, and closed stdin. Loki captures both output streams and discards raw errors. One failed check does not stop the other integrations.
+A successful command with empty stdout means signed out. Nonempty stdout must contain only one username or email, never a token. Commands run with the inspected tool's persona settings and dependencies, the caller's working directory, and closed stdin. Loki captures both output streams and discards raw errors. One failed check does not stop the other integrations.
 
 For structured output, multiple saved accounts, or a local credential file, declare `who = "who"` under `[hooks]` and implement `who(ctx)` in `adapter.py`. Return a dictionary containing `status`, optional `account`, and optional `detail`. Status values are `signed_in`, `signed_out`, `configured` (saved credentials), `unknown`, `unavailable`, `error`, `timeout`, or `unsupported`. Only those three result fields are displayed; do not put secrets in them.
 

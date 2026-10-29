@@ -26,17 +26,20 @@ print(json.dumps({key: os.environ.get(key) for key in
         for tool in ('gcloud', 'adc', 'firebase'):
             with self.subTest(tool=tool):
                 self.run_loki('tools', 'install', tool)
-                result = self.run_in_persona('personal', sys.executable, '-c', probe)
-                values = json.loads(result.stdout)
+                with patch.dict(os.environ, self.env, clear=True):
+                    values = module.environment('personal', tools=[tool])
                 self.assertEqual(values['CLOUDSDK_CONFIG'], str(self.directory('personal') / 'gcloud'))
-                self.assertIsNone(values['CLOUDSDK_ACTIVE_CONFIG_NAME'])
+                self.assertNotIn('CLOUDSDK_ACTIVE_CONFIG_NAME', values)
+                shell = json.loads(self.run_in_persona('personal', sys.executable, '-c', probe).stdout)
+                self.assertEqual(shell['CLOUDSDK_CONFIG'], self.env['CLOUDSDK_CONFIG'])
+                self.assertEqual(shell['CLOUDSDK_ACTIVE_CONFIG_NAME'], 'outside-loki')
                 self.run_loki('tools', 'remove', tool)
         self.assertFalse((self.base / 'outside-google').exists())
 
     def gcloud(self, persona, *args):
         # Only local config commands are used. No real login, logout, or cloud API.
         with patch.dict(os.environ, self.env, clear=True):
-            env = module.environment(persona)
+            env = module.environment(persona, tools=['gcloud'])
         env.update(CLOUDSDK_CORE_DISABLE_USAGE_REPORTING='true',
                    CLOUDSDK_COMPONENT_MANAGER_DISABLE_UPDATE_CHECK='true')
         result = subprocess.run([GCLOUD, '--quiet', *args], env=env, cwd=self.base,

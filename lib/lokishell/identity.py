@@ -32,7 +32,12 @@ class ProbeContext(Context):
     def capture(self):
         """Run who.command without stdin; never echo its output or error text."""
         command = [self.render(part) for part in self.tool.data['who']['command']]
-        env = self.core.environment(self.persona)
+        from .dispatch import native_command
+        env = self.core.environment(self.persona, tools=[self.tool.id])
+        native = native_command(self.core, command[0], env)
+        if not native:
+            raise FileNotFoundError(command[0])
+        command[0] = native
         env.update(NO_COLOR='1', CLICOLOR='0')
         with subprocess.Popen(command, env=env, stdin=subprocess.DEVNULL,
                               stdout=subprocess.PIPE, stderr=subprocess.PIPE,

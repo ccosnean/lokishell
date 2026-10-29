@@ -40,14 +40,14 @@ class ToolTests(LokiFixture):
         (self.directory('personal')/'auth/github-token').write_text('fictional-personal')
         probe='import os,json; print(json.dumps({k:os.environ.get(k) for k in ["GH_TOKEN","GH_CONFIG_DIR","XDG_CONFIG_HOME","OPENAI_API_KEY","LOKI_PROFILE"]}))'
         first=json.loads(self.run_in_persona('personal','python3','-c',probe).stdout)
-        self.assertEqual(first['GH_TOKEN'],'fictional-personal')
+        self.assertEqual(first['GH_TOKEN'],'wrong-inherited-token')
         result=self.run_in_persona('personal','bash','--noprofile','--norc','-c',
                                   'loki_test_env="$("$1" _env work)"; eval "$loki_test_env"; python3 -c "$2"',
                                   'bash',str(LOKI),probe)
         switched=json.loads(result.stdout)
         self.assertEqual(switched['GH_TOKEN'],'wrong-inherited-token')
         self.assertEqual(switched['GH_CONFIG_DIR'], self.env.get('GH_CONFIG_DIR'))
-        self.assertEqual(switched['XDG_CONFIG_HOME'],str(self.directory('work')/'xdg'))
+        self.assertEqual(switched['XDG_CONFIG_HOME'],self.env['XDG_CONFIG_HOME'])
         self.assertEqual(switched['OPENAI_API_KEY'],'wrong-inherited-key')
 
     @unittest.skipUnless(shutil.which('zsh'), 'zsh not available')
@@ -63,11 +63,11 @@ class ToolTests(LokiFixture):
                 'cd '+str(self.base)+'; echo "back=$GH_TOKEN"')
         result=subprocess.run(['zsh','-c',script],cwd=self.projects['personal'],
                               env=dict(self.env,ZDOTDIR=str(dot)),check=True,text=True,capture_output=True)
-        self.assertIn('first=fictional-personal',result.stdout)
+        self.assertIn('first=wrong-inherited-token',result.stdout)
         self.assertIn('second=wrong-inherited-token',result.stdout)
-        self.assertIn('work='+str(self.directory('work')/'xdg'),result.stdout)
+        self.assertIn('work='+self.env['XDG_CONFIG_HOME'],result.stdout)
         self.assertIn('google=wrong-inherited-token',result.stdout)
-        self.assertIn('back=fictional-personal',result.stdout)
+        self.assertIn('back=wrong-inherited-token',result.stdout)
 
     def test_local_tool_can_be_installed_configured_logged_in_and_cleaned_without_core_changes(self):
         definition=self.base/'acme'; definition.mkdir()
@@ -136,7 +136,7 @@ XDG_CONFIG_HOME="{profile}/different"
 ''')
         failed=self.run_loki('tools','install','--from',str(definition),check=False)
         self.assertNotEqual(failed.returncode,0)
-        self.assertIn('conflicting values for XDG_CONFIG_HOME',failed.stderr)
+        self.assertIn('requires env.scope = "process"',failed.stderr)
         self.assertNotIn('conflict',json.loads((self.directory('personal')/'profile.json').read_text())['tools'])
 
     def test_invalid_definition_cannot_escape_profile_or_replace_builtin_silently(self):
