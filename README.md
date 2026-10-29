@@ -12,10 +12,23 @@ Choose a global persona, override it by directory, and connect each account once
 
 ```sh
 brew install ccosnean/tap/lokishell
+```
+
+Or use curl on **macOS or Linux** with **Python 3.11+ and direnv** already installed:
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/ccosnean/lokishell/main/install.sh | sh
+```
+
+The curl installer verifies the release checksum and installs into `~/.local/bin/loki` with a private Python environment under `~/.local/share/lokishell/`. If needed, follow its printed `PATH` instruction. Rerun it to upgrade. For a custom location or pinned release, pass `--prefix PATH` or `--version X.Y.Z` using `sh -s --` after the pipe. Existing personas and logins are preserved.
+
+Then choose your persona:
+
+```sh
 loki use personal --global
 ```
 
-Open a new terminal once to load the shell hooks. Homebrew installs LokiShell and its dependencies; install the service CLIs you use separately.
+Open a new terminal once to load the shell hooks. Homebrew installs LokiShell and its dependencies. Install the service CLIs you use separately.
 
 ## Switch personal and work accounts by directory
 
