@@ -314,9 +314,9 @@ def hook_command(shell):
 
 def emit_environment(name):
     if name:
-        from .dispatch import prepare
+        from .dispatch import ensure_prepared
         catalog = core.registry()
-        prepare(core, catalog, catalog.roots(core.read_config(name)))
+        ensure_prepared(core, catalog, catalog.roots(core.read_config(name)))
     remove, values = core.changes(name)
     for key in sorted(remove):
         click.echo('unset '+key)

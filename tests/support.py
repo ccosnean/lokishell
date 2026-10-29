@@ -33,7 +33,8 @@ class LokiFixture(unittest.TestCase):
                         OPENAI_API_KEY='wrong-inherited-key', CODEX_SQLITE_HOME='/wrong/sqlite',
                         CLOUDSDK_AUTH_ACCESS_TOKEN='wrong-inherited-token',
                         GOOGLE_APPLICATION_CREDENTIALS='/wrong/adc', FAKE_LOG=str(self.base / 'calls.jsonl'))
-        for key in ('ZDOTDIR', 'BASH_ENV', 'ENV', 'LOKI_ENV_STATE', 'LOKI_PROFILE', 'LOKI_SHIM_PATH', 'LOKI_ENV_APPLIED'):
+        for key in ('ZDOTDIR', 'BASH_ENV', 'ENV', 'LOKI_ENV_STATE', 'LOKI_PROFILE', 'LOKI_SHIM_PATH',
+                    'LOKI_ENV_APPLIED', 'LOKI_PYTHON', 'LOKI_EXECUTABLE'):
             self.env.pop(key, None)
         for name in ('firebase', 'gcloud', 'claude', 'codex', 'gh'):
             script = self.fake / name

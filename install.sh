@@ -248,7 +248,8 @@ def main():
     if str(entry.parent) not in os.environ.get('PATH', '').split(os.pathsep):
         print('Add the installation directory to your PATH:')
         print('  export PATH=' + shlex.quote(str(entry.parent)) + ':"$PATH"')
-    print('Next: ' + shlex.quote(str(entry)) + ' use personal --global')
+    print('Prepare shell integration and existing personas: ' + shlex.quote(str(entry)) + ' setup')
+    print('For a new persona: ' + shlex.quote(str(entry)) + ' use NAME --global')
     print('Then open a fresh terminal. Rerun this installer to upgrade; no reset is needed.')
 
 

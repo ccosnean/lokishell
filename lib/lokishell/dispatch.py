@@ -4,6 +4,18 @@ import shlex
 import shutil
 import sys
 
+HEADER = '#!/bin/sh\n# LokiShell command launcher v2\n'
+
+
+def ensure_prepared(core, catalog, names):
+    """Validate without repairing: shell startup must work with read-only stores."""
+    for command in catalog.commands(names):
+        path = core.root() / 'bin' / command
+        core.check_storage_path(path)
+        if not path.is_file() or not os.access(path, os.X_OK) or not path.read_text().startswith(HEADER):
+            raise ValueError('Command launchers need setup. Run loki setup in your regular terminal, then retry. '
+                             'No configuration was changed.')
+
 
 def without_launchers(core, path, env):
     owned = {str(core.root() / 'bin'), env.get('LOKI_SHIM_PATH')}
@@ -25,7 +37,13 @@ def prepare(core, catalog, names):
         core.check_storage_path(path)
         # Use the running interpreter directly: a custom Python integration
         # must not intercept Loki's own /usr/bin/env python3 shebang.
-        content = '#!/bin/sh\nexec ' + shlex.join([sys.executable, core.executable(), '_run-command', command]) + ' "$@"\n'
+        # Runtime paths come from the active shell so upgrades do not require
+        # rewriting launchers during read-only profile loading. The fallback
+        # also permits direct invocation outside an initialized shell.
+        content = (HEADER + '_loki_python=${LOKI_PYTHON:-}\n_loki_executable=${LOKI_EXECUTABLE:-}\n'
+                   + '[ -n "$_loki_python" ] || _loki_python=' + shlex.quote(sys.executable) + '\n'
+                   + '[ -n "$_loki_executable" ] || _loki_executable=' + shlex.quote(core.executable()) + '\n'
+                   + 'exec "$_loki_python" "$_loki_executable" _run-command ' + shlex.quote(command) + ' "$@"\n')
         if not path.exists() or path.read_text() != content:
             core.write(path, content, mode=0o700)
 

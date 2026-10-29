@@ -122,6 +122,8 @@ eval "$(loki hook bash)"                # use zsh for a zsh runner
 
 Launch agents from an initialized terminal. Existing desktop app accounts and hosted connections follow their app login.
 
+Loading an existing persona is read-only. `loki setup` prepares launchers for all existing personas; run it once in your regular terminal when upgrading from 0.7.0 or if a launcher is missing. Agents then reuse those launchers without changing permissions or creating files. Native CLIs still follow the session's permissions for their own login, credential refresh, and log writes.
+
 ## Clean up or reset
 
 | Command | Effect |

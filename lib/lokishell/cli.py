@@ -17,7 +17,7 @@ import uuid
 from .registry import Registry, Context, ENV_NAME
 from . import setup_files
 
-VERSION = '0.7.0'
+VERSION = '0.7.1'
 BEGIN, END = '# BEGIN lokishell', '# END lokishell'
 NAME = re.compile(r'^[a-zA-Z0-9][a-zA-Z0-9_-]{0,63}$')
 
@@ -228,6 +228,7 @@ def environment(name, tools=None):
         remove |= scoped_remove
         values.update(scoped_values)
     values.update({'LOKI_HOME': str(root()), 'LOKI_PROFILE': name,
+                   'LOKI_PYTHON': sys.executable, 'LOKI_EXECUTABLE': executable(),
                    'DIRENV_CONFIG': baseline.get('DIRENV_CONFIG', str(Path.home() / '.config/direnv'))})
     owned = remove | set(values)
     snapshot = {key: baseline.get(key) for key in owned}
@@ -368,6 +369,14 @@ def install_shell():
     shell = Path(os.environ.get('SHELL', '/bin/zsh')).name
     if shell not in ('zsh', 'bash'):
         raise ValueError('Automatic setup supports zsh and bash. Run loki from one of these shells.')
+    from .dispatch import prepare
+    catalog = registry()
+    # Setup is an explicit write operation. Prepare every existing persona,
+    # including disabled tools whose shared launchers may still be on PATH.
+    for config_path in sorted((root() / 'profiles').glob('*/profile.json')):
+        config = read_config(config_path.parent.name)
+        prepare(core_api(), catalog, list(dict.fromkeys([
+            *catalog.roots(config), *config.get('managed_tools', [])])))
     home = Path.home()
     zhome = Path(os.environ.get('ZDOTDIR', home)).expanduser()
     files = [zhome / '.zshenv', zhome / '.zshrc'] if shell == 'zsh' else [home / '.bashrc', home / '.bash_profile']
